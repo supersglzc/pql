@@ -1,0 +1,35 @@
+defaults:
+  - algo: pql_algo
+  - task: null
+  - logging: default
+  - _self_
+
+hydra:
+  searchpath:
+    - pkg://isaacgymenvs/cfg
+
+num_envs: 4096
+eval_num_envs: 150
+device: 'cuda'
+sim_device: 'cuda'
+rl_device: ${device}
+graphics_device_id: 0
+seed: 40
+max_step: null
+max_time: 3600 # in seconds
+eval_headless: True
+headless: True
+isaac_param: False
+
+#  'physx' or 'flex'
+physics_engine: 'physx'
+# whether to use cpu or gpu pipeline
+pipeline: 'gpu'
+
+## PhysX arguments
+num_threads: 4 # Number of worker threads per scene used by PhysX - for CPU PhysX only.
+solver_type: 1 # 0: pgs, 1: tgs
+num_subscenes: 4 # Splits the simulation into N physics scenes and runs each one in a separate thread
+
+artifact: null
+
