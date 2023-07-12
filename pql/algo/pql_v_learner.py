@@ -18,7 +18,7 @@ from pql.utils.distl_util import projection
 from pql.utils.model_util import load_model
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=0.7)
 class PQLVLearner:
     def __init__(self, obs_dim, action_dim, cfg):
         self.cfg = cfg
