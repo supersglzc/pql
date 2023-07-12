@@ -96,7 +96,7 @@ class PQLPLearner:
         return grad_norm
 
 
-@ray.remote(num_gpus=0.3)
+@ray.remote
 def asyn_p_learner(p_learner, cfg):
     logger.warning(f"P-Learner starts running asynchronously on GPU {cfg.algo.p_learner_gpu}")
     while True:
