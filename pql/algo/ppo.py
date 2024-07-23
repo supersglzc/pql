@@ -117,7 +117,8 @@ class AgentPPO(ActorCriticBase):
                     returns[t] = rewards[t] + self.cfg.algo.gamma * nextnonterminal * next_return
                 advantages = returns - values
 
-        b_obs = obs.reshape((-1,) + (*self.obs_dim,))
+        obs_dim = (self.obs_dim,) if isinstance(self.obs_dim, int) else self.obs_dim
+        b_obs = obs.reshape((-1,) + (*obs_dim,))
         b_actions = actions.reshape((-1,) + (self.action_dim,))
         b_logprobs = logprobs.reshape(-1)
         b_advantages = advantages.reshape(-1)
