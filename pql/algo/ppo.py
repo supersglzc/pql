@@ -18,9 +18,6 @@ class AgentPPO(ActorCriticBase):
         if self.cfg.algo.value_norm:
             self.value_rms = RunningMeanStd(shape=(1), device=self.device)
 
-    def reset_agent(self):
-        self.obs = self.env.reset()
-
     def get_actions(self, obs):
         if self.cfg.algo.obs_norm:
             obs = self.obs_rms.normalize(obs)

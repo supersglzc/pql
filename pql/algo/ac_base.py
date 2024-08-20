@@ -54,7 +54,8 @@ class ActorCriticBase:
             self.obs_rms = None
 
     def reset_agent(self):
-        self.obs = self.env.reset()
+        self.obs, extras = self.env.reset()
+        return self.obs, extras
 
     def update_tracker(self, reward, done, info):
         self.current_returns += reward
@@ -78,6 +79,12 @@ class ActorCriticBase:
                     self.traj_info_values[key][env_done_indices] = 0
                 elif self.info_track_step[key] == 'all-step':
                     self.info_trackers[key].update(info[key].cpu())
+
+        # reward logger
+        if len(env_done_indices) != 0:
+            for key in info['episode'].keys():
+                if 'Episode Reward' in key:
+                    self.reward_logger[key].update(info['episode'][key].item())
 
     def add_info_tracker_log(self, log_info):
         if self.cfg.info_track_keys is not None:
