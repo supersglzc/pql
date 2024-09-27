@@ -33,10 +33,10 @@ class ActorCriticBase:
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
         self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), self.cfg.algo.critic_lr)
 
-        self.return_tracker = Tracker(self.cfg.algo.tracker_len)
-
         self.current_returns = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
         self.current_lengths = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
+        self.return_tracker = Tracker(self.cfg.algo.tracker_len)
+        self.success_tracker = Tracker(self.cfg.algo.tracker_len)
         self.step_tracker = Tracker(self.cfg.algo.tracker_len)
 
         info_track_keys = self.cfg.info_track_keys
@@ -63,6 +63,7 @@ class ActorCriticBase:
         env_done_indices = torch.where(done)[0]
         self.return_tracker.update(self.current_returns[env_done_indices])
         self.step_tracker.update(self.current_lengths[env_done_indices])
+        self.success_tracker.update(info['success'][env_done_indices])
         self.current_returns[env_done_indices] = 0
         self.current_lengths[env_done_indices] = 0
         if self.cfg.info_track_keys is not None:
@@ -83,7 +84,7 @@ class ActorCriticBase:
         # reward logger
         if len(env_done_indices) != 0:
             for key in info['episode'].keys():
-                if 'Episode Reward' in key:
+                if 'Episode_Reward' in key:
                     self.reward_logger[key].update(info['episode'][key].item())
 
     def add_info_tracker_log(self, log_info):

@@ -12,11 +12,17 @@ from pql.utils.common import handle_timeout, aggregate_traj_info
 class AgentPPO(ActorCriticBase):
     def __post_init__(self):
         super().__post_init__()
-        self.dones = torch.zeros(self.cfg.num_envs).to(self.device)
         self.timeout_info = None
 
         if self.cfg.algo.value_norm:
             self.value_rms = RunningMeanStd(shape=(1), device=self.device)
+
+    def reset_agent(self):
+        self.obs, extras = self.env.reset()
+        self.dones = torch.zeros(self.cfg.num_envs).to(self.device)
+        self.current_returns = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
+        self.current_lengths = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
+        return self.obs, extras
 
     def get_actions(self, obs):
         if self.cfg.algo.obs_norm:
@@ -184,7 +190,8 @@ class AgentPPO(ActorCriticBase):
             "train/critic_loss": np.mean(critic_loss_list),
             "train/actor_loss": np.mean(actor_loss_list),
             "train/return": self.return_tracker.mean(),
-            "train/episode_length": self.step_tracker.mean()
+            "train/episode_length": self.step_tracker.mean(),
+            "train/success_rate": self.success_tracker.mean(),
         }
         self.add_info_tracker_log(log_info)
         return log_info

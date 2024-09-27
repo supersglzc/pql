@@ -21,11 +21,11 @@ def init_wandb(cfg):
     wandb_tags = wandb_kwargs.get('tags', None)
     if wandb_tags is not None and isinstance(wandb_tags, str):
         wandb_kwargs['tags'] = [wandb_tags]
-    if cfg.artifact is not None:
-        wandb_id = cfg.artifact.split("/")[-1].split(":")[0]
-        wandb_run = wandb.init(**wandb_kwargs, config=wandb_cfg, id=wandb_id, resume="must")
-    else:
-        wandb_run = wandb.init(**wandb_kwargs, config=wandb_cfg)
+    # if cfg.artifact is not None:
+    #     wandb_id = cfg.artifact.split("/")[-1].split(":")[0]
+    #     wandb_run = wandb.init(**wandb_kwargs, config=wandb_cfg, id=wandb_id, resume="must")
+    # else:
+    wandb_run = wandb.init(**wandb_kwargs, config=wandb_cfg)
     logger.warning(f'Wandb run dir:{wandb_run.dir}')
     logger.warning(f'Project name:{wandb_run.project_name()}')
     return wandb_run
