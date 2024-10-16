@@ -48,6 +48,8 @@ class AgentPPO(ActorCriticBase):
         ob = self.obs
         dones = self.dones
         for step in range(timesteps):
+            if self.cfg.algo.obs_norm:
+                self.obs_rms.update(ob)
             traj_obs[step] = deepcopy(ob)
             traj_dones[step] = dones
 
