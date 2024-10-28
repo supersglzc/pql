@@ -21,14 +21,14 @@ def load_model(model, model_type, cfg):
         logger.warning(f'Invalid model type:{model_type}')
 
 
-def save_model(path, actor, critic, rms, wandb_run, ret_max):
+def save_model(path, actor, critic, rms, wandb_run, description):
     checkpoint = {'obs_rms': rms,
             'actor': actor,
             'critic': critic
             }
     torch.save(checkpoint, path)  # save policy network in *.pth
 
-    model_artifact = wandb.Artifact(wandb_run.id, type="model", description=f"return: {int(ret_max)}")
+    model_artifact = wandb.Artifact(wandb_run.id, type="model", description=description)
     model_artifact.add_file(path)
     wandb.save(path, base_path=wandb_run.dir)
     wandb_run.log_artifact(model_artifact)
