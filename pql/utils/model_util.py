@@ -22,7 +22,14 @@ def load_model(model, model_type, cfg):
 
 
 def save_model(path, actor, critic, rms, wandb_run, description):
-    checkpoint = {'obs_rms': rms,
+    if isinstance(actor, list):
+        checkpoint = {'obs_rms': rms,
+            'critic': critic
+            }
+        for i in range(len(actor)):
+            checkpoint[f'actor_{i}'] = actor[i].state_dict()
+    else:
+        checkpoint = {'obs_rms': rms,
             'actor': actor,
             'critic': critic
             }

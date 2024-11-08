@@ -286,3 +286,20 @@ def check_device(cfg):
             assert f'Invalid CUDA device {gpu_id}: id out of range'
     # need more check
         
+
+# parse multi-agent reward
+def parse_multi_rew(rew_dict, cfg):
+    assert cfg.task.multi.single_agent_rew is not None, "single_agent_rew is not defined in the cfg"
+    rew_list = cfg.task.multi.single_agent_rew
+    multi_rew = []
+    for i in range(len(rew_list)):
+        rew_terms = rew_list[i]
+        tot_rew = None
+        for rew_term, rew in rew_dict.items():
+            if rew_term in rew_terms:
+                if tot_rew is None:
+                    tot_rew = rew
+                else:
+                    tot_rew += rew
+        multi_rew.append(tot_rew)
+    return multi_rew

@@ -112,3 +112,14 @@ class RunningMeanStd:
         self.mean = info[0]
         self.var = info[1]
         self.count = info[2]
+
+
+def slice_tensor(tensor, indices):
+    # If there's only one range, no need to concatenate
+    if len(indices) == 1:
+        start, end = indices[0]
+        return tensor[:, start:end]
+    else:
+        # For multiple ranges, concatenate the slices along the second dimension
+        slices = [tensor[:, start:end] for start, end in indices]
+        return torch.cat(slices, dim=1)
