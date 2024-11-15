@@ -10,18 +10,20 @@ from torch.distributions import Normal
 from pql.utils.torch_util import SquashedNormal
 
 
-def create_simple_mlp(in_dim, out_dim, hidden_layers, act=nn.ELU):
+def create_simple_mlp(in_dim, out_dim, hidden_layers, act=nn.ELU, use_batchnorm=False):
     layer_nums = [in_dim, *hidden_layers, out_dim]
     model = []
     for idx, (in_f, out_f) in enumerate(zip(layer_nums[:-1], layer_nums[1:])):
         model.append(nn.Linear(in_f, out_f))
         if idx < len(layer_nums) - 2:
+            if use_batchnorm:
+                model.append(nn.BatchNorm1d(out_f))
             model.append(act())
     return nn.Sequential(*model)
 
 
 class MLPNet(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_layers=None):
+    def __init__(self, in_dim, out_dim, hidden_layers=None, use_batchnorm=False):
         super().__init__()
         if isinstance(in_dim, Sequence):
             in_dim = in_dim[0]
@@ -29,7 +31,8 @@ class MLPNet(nn.Module):
             hidden_layers = [512, 256, 128]
         self.net = create_simple_mlp(in_dim=in_dim,
                                      out_dim=out_dim,
-                                     hidden_layers=hidden_layers)
+                                     hidden_layers=hidden_layers,
+                                     use_batchnorm=use_batchnorm)
 
     def forward(self, x):
         return self.net(x)
@@ -115,6 +118,26 @@ class DoubleQ(nn.Module):
             state_dim = state_dim[0]
         self.net_q1 = MLPNet(in_dim=state_dim + act_dim, out_dim=1)
         self.net_q2 = MLPNet(in_dim=state_dim + act_dim, out_dim=1)
+
+    def get_q_min(self, state: Tensor, action: Tensor) -> Tensor:
+        return torch.min(*self.get_q1_q2(state, action))  # min Q value
+
+    def get_q1_q2(self, state: Tensor, action: Tensor) -> (Tensor, Tensor):
+        input_x = torch.cat((state, action), dim=1)
+        return self.net_q1(input_x), self.net_q2(input_x)  # two Q values
+
+    def get_q1(self, state: Tensor, action: Tensor) -> (Tensor, Tensor):
+        input_x = torch.cat((state, action), dim=1)
+        return self.net_q1(input_x)
+    
+
+class DoubleQBatchNorm(nn.Module):
+    def __init__(self, state_dim, act_dim):
+        super().__init__()
+        if isinstance(state_dim, Sequence):
+            state_dim = state_dim[0]
+        self.net_q1 = MLPNet(in_dim=state_dim + act_dim, out_dim=1, use_batchnorm=True)
+        self.net_q2 = MLPNet(in_dim=state_dim + act_dim, out_dim=1, use_batchnorm=True)
 
     def get_q_min(self, state: Tensor, action: Tensor) -> Tensor:
         return torch.min(*self.get_q1_q2(state, action))  # min Q value
