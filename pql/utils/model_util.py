@@ -12,12 +12,12 @@ def load_model(model, model_type, cfg):
     logger.warning(f'Load {model_type}')
     weights = torch.load(Path(pql.LIB_PATH, "model.pth"))
 
-    if model_type in ["actor", "critic", "obs_rms"]:
+    try:
         if model_type == "obs_rms" and weights[model_type] is None:
             logger.warning(f'Observation normalization is enabled, but loaded weight contains no normalization info.')
             return
         model.load_state_dict(weights[model_type])
-    else:
+    except KeyError:
         logger.warning(f'Invalid model type:{model_type}')
 
 
