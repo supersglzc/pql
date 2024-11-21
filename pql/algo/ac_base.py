@@ -57,17 +57,24 @@ class ActorCriticBase:
 
     def reset_agent(self):
         self.obs, extras = self.env.reset()
+        self.dones = torch.zeros(self.cfg.num_envs).to(self.device)
+        self.current_returns = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
+        self.current_lengths = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
+        if self.detailed_returns is not None:
+            for rew_name in self.detailed_returns.keys():
+                self.detailed_returns[rew_name] = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
         return self.obs, extras
 
     def update_tracker(self, reward, done, info):
         self.current_returns += reward
         self.current_lengths += 1
         env_done_indices = torch.where(done)[0]
-        self.return_tracker.update(self.current_returns[env_done_indices])
-        self.step_tracker.update(self.current_lengths[env_done_indices])
-        self.success_tracker.update(info['success'][env_done_indices])
-        self.current_returns[env_done_indices] = 0
-        self.current_lengths[env_done_indices] = 0
+        if len(env_done_indices) != 0:
+            self.return_tracker.update(self.current_returns[env_done_indices])
+            self.step_tracker.update(self.current_lengths[env_done_indices])
+            self.success_tracker.update(info['success'][env_done_indices])
+            self.current_returns[env_done_indices] = 0
+            self.current_lengths[env_done_indices] = 0
         if self.cfg.info_track_keys is not None:
             env_done_indices = env_done_indices.cpu()
             for key in self.cfg.info_track_keys:
@@ -84,15 +91,15 @@ class ActorCriticBase:
                     self.info_trackers[key].update(info[key].cpu())
 
         # reward logger
-        if 'detailed_reward' in info.keys():
-            if self.detailed_returns is None:
-                self.detailed_returns = {}
-                self.detailed_tracker = {}
-                for rew_name in info['detailed_reward'].keys():
-                    self.detailed_returns[rew_name] = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
-                    self.detailed_tracker[rew_name] = Tracker(self.cfg.algo.tracker_len)
+        if self.detailed_returns is None:
+            self.detailed_returns = {}
+            self.detailed_tracker = {}
             for rew_name in info['detailed_reward'].keys():
-                self.detailed_returns[rew_name] += info['detailed_reward'][rew_name]
+                self.detailed_returns[rew_name] = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
+                self.detailed_tracker[rew_name] = Tracker(self.cfg.algo.tracker_len)
+        for rew_name in info['detailed_reward'].keys():
+            self.detailed_returns[rew_name] += info['detailed_reward'][rew_name]
+            if len(env_done_indices) != 0:
                 self.detailed_tracker[rew_name].update(self.detailed_returns[rew_name][env_done_indices])
                 self.detailed_returns[rew_name][env_done_indices] = 0
 

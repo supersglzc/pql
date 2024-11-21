@@ -17,13 +17,6 @@ class AgentPPO(ActorCriticBase):
         if self.cfg.algo.value_norm:
             self.value_rms = RunningMeanStd(shape=(1), device=self.device)
 
-    def reset_agent(self):
-        self.obs, extras = self.env.reset()
-        self.dones = torch.zeros(self.cfg.num_envs).to(self.device)
-        self.current_returns = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
-        self.current_lengths = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
-        return self.obs, extras
-
     def get_actions(self, obs):
         if self.cfg.algo.obs_norm:
             obs = self.obs_rms.normalize(obs)
