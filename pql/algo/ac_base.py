@@ -35,8 +35,10 @@ class ActorCriticBase:
 
         self.current_returns = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
         self.current_lengths = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
+        self.detailed_returns = None
         self.return_tracker = Tracker(self.cfg.algo.tracker_len)
         self.success_tracker = Tracker(self.cfg.algo.tracker_len)
+        self.detailed_tracker = None
         self.step_tracker = Tracker(self.cfg.algo.tracker_len)
 
         info_track_keys = self.cfg.info_track_keys
@@ -82,10 +84,17 @@ class ActorCriticBase:
                     self.info_trackers[key].update(info[key].cpu())
 
         # reward logger
-        if len(env_done_indices) != 0:
-            for key in info['episode'].keys():
-                if 'Episode_Reward' in key:
-                    self.reward_logger[key].update(info['episode'][key].item())
+        if 'detailed_reward' in info.keys():
+            if self.detailed_returns is None:
+                self.detailed_returns = {}
+                self.detailed_tracker = {}
+                for rew_name in info['detailed_reward'].keys():
+                    self.detailed_returns[rew_name] = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
+                    self.detailed_tracker[rew_name] = Tracker(self.cfg.algo.tracker_len)
+            for rew_name in info['detailed_reward'].keys():
+                self.detailed_returns[rew_name] += info['detailed_reward'][rew_name]
+                self.detailed_tracker[rew_name].update(self.detailed_returns[rew_name][env_done_indices])
+                self.detailed_returns[rew_name][env_done_indices] = 0
 
     def add_info_tracker_log(self, log_info):
         if self.cfg.info_track_keys is not None:
