@@ -298,8 +298,8 @@ def parse_multi_rew(rew_dict, cfg):
         for rew_term, rew in rew_dict.items():
             if rew_term in rew_terms:
                 if tot_rew is None:
-                    tot_rew = rew
+                    tot_rew = rew.clone()
                 else:
-                    tot_rew += rew
+                    tot_rew += rew.clone()
         multi_rew.append(tot_rew)
     return multi_rew

@@ -15,12 +15,18 @@ from pql.models import model_name_to_path
 class AgentIPPO(ActorCriticBase):
     def __post_init__(self):
         super().__post_init__()
+        self.obs_dim = list(self.cfg.task.multi.single_agent_obs_dim)
+        self.action_dim = int(self.cfg.task.multi.single_agent_action_dim)
         act_class = load_class_from_path(self.cfg.algo.act_class,
                                          model_name_to_path[self.cfg.algo.act_class])
         cri_class = load_class_from_path(self.cfg.algo.cri_class,
                                          model_name_to_path[self.cfg.algo.cri_class])
-        self.actor_left = act_class(self.obs_dim, self.action_dim).to(self.cfg.device)
-        self.critic_left = cri_class(self.obs_dim, self.action_dim).to(self.cfg.device)
+        self.actor = act_class(self.obs_dim[0], self.action_dim).to(self.cfg.device)
+        self.critic = cri_class(self.obs_dim[0], self.action_dim).to(self.cfg.device)
+        self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
+        self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), self.cfg.algo.critic_lr)
+        self.actor_left = act_class(self.obs_dim[1], self.action_dim).to(self.cfg.device)
+        self.critic_left = cri_class(self.obs_dim[1], self.action_dim).to(self.cfg.device)
         self.actor_optimizer_left = torch.optim.AdamW(self.actor_left.parameters(), self.cfg.algo.actor_lr)
         self.critic_optimizer_left = torch.optim.AdamW(self.critic_left.parameters(), self.cfg.algo.critic_lr)
 
@@ -28,22 +34,24 @@ class AgentIPPO(ActorCriticBase):
 
         if self.cfg.algo.value_norm:
             self.value_rms = RunningMeanStd(shape=(1), device=self.device)
+            self.value_rms_left = RunningMeanStd(shape=(1), device=self.device)
 
-    def get_actions(self, obs, actor, critic):
+    def get_actions(self, obs, actor, critic, value_rms):
         if self.cfg.algo.obs_norm:
             obs = self.obs_rms.normalize(obs)
         actions, action_dist, logprobs, entropy = actor.get_actions_logprob_entropy(obs)
         value = critic(obs)
         if self.cfg.algo.value_norm:
-            self.value_rms.update(value)
-            value = self.value_rms.unnormalize(value)
+            value_rms.update(value)
+            value = value_rms.unnormalize(value)
         return actions, logprobs, value.flatten()
 
     @torch.no_grad()
     def explore_env(self, env, timesteps: int, random: bool = False) -> list:
-        obs_dim = (self.obs_dim,) if isinstance(self.obs_dim, int) else self.obs_dim
+        obs_dim = (self.obs_dim[0],) if isinstance(self.obs_dim[0], int) else self.obs_dim[0]
+        obs_dim_left = (self.obs_dim[1],) if isinstance(self.obs_dim[1], int) else self.obs_dim[1]
         traj_obs = torch.zeros((timesteps, self.cfg.num_envs) + (*obs_dim,), device=self.device)
-        traj_obs_left = torch.zeros((timesteps, self.cfg.num_envs) + (*obs_dim,), device=self.device)
+        traj_obs_left = torch.zeros((timesteps, self.cfg.num_envs) + (*obs_dim_left,), device=self.device)
         traj_actions = torch.zeros((timesteps, self.cfg.num_envs) + (self.action_dim,), device=self.device)
         traj_actions_left = torch.zeros((timesteps, self.cfg.num_envs) + (self.action_dim,), device=self.device)
         traj_logprobs = torch.zeros((timesteps, self.cfg.num_envs), device=self.device)
@@ -66,8 +74,8 @@ class AgentIPPO(ActorCriticBase):
             traj_obs_left[step] = deepcopy(ob_left)
             traj_dones[step] = dones
 
-            action_right, logprob_right, val_right = self.get_actions(ob_right, self.actor, self.critic)
-            action_left, logprob_left, val_left = self.get_actions(ob_left, self.actor_left, self.critic_left)
+            action_right, logprob_right, val_right = self.get_actions(ob_right, self.actor, self.critic, self.value_rms)
+            action_left, logprob_left, val_left = self.get_actions(ob_left, self.actor_left, self.critic_left, self.value_rms_left)
             action = torch.cat([action_right, action_left], dim=-1)
             next_ob, reward, done, info = env.step(action)
             reward_right, reward_left = parse_multi_rew(info['detailed_reward'], self.cfg)
@@ -97,22 +105,23 @@ class AgentIPPO(ActorCriticBase):
         ob_right = slice_tensor(ob, self.cfg.task.multi.single_agent_obs_idx[0])
         ob_left = slice_tensor(ob, self.cfg.task.multi.single_agent_obs_idx[1])
         data = self.compute_adv((traj_obs, traj_actions, traj_logprobs, traj_rewards,
-                                 traj_dones, traj_values, ob_right, dones), gae=self.cfg.algo.use_gae, timeout=self.timeout_info, critic=self.critic)
+                                 traj_dones, traj_values, ob_right, dones), gae=self.cfg.algo.use_gae, timeout=self.timeout_info, critic=self.critic, value_rms=self.value_rms)
         data_left = self.compute_adv((traj_obs_left, traj_actions_left, traj_logprobs_left, traj_rewards_left,
-                                 traj_dones, traj_values_left, ob_left, dones), gae=self.cfg.algo.use_gae, timeout=self.timeout_info, critic=self.critic_left)
+                                 traj_dones, traj_values_left, ob_left, dones), gae=self.cfg.algo.use_gae, timeout=self.timeout_info, critic=self.critic_left, value_rms=self.value_rms_left)
 
         return [data, data_left], timesteps * self.cfg.num_envs
 
-    def compute_adv(self, buffer, gae=True, timeout=None, critic=None):
+    def compute_adv(self, buffer, gae=True, timeout=None, critic=None, value_rms=None):
         with torch.no_grad():
             obs, actions, logprobs, rewards, dones, values, next_obs, next_done = buffer
+            obs_dim = (obs.shape[-1],)
             timesteps = obs.shape[0]
             if self.cfg.algo.obs_norm:
                 next_obs = self.obs_rms.normalize(next_obs)
             next_value = critic(next_obs)
             if self.cfg.algo.value_norm:
-                self.value_rms.update(next_value)
-                next_value = self.value_rms.unnormalize(next_value)
+                value_rms.update(next_value)
+                next_value = value_rms.unnormalize(next_value)
             next_value = next_value.reshape(1, -1)
             if gae:
                 advantages = torch.zeros_like(rewards).to(self.device)
@@ -146,7 +155,6 @@ class AgentIPPO(ActorCriticBase):
                     returns[t] = rewards[t] + self.cfg.algo.gamma * nextnonterminal * next_return
                 advantages = returns - values
 
-        obs_dim = (self.obs_dim,) if isinstance(self.obs_dim, int) else self.obs_dim
         b_obs = obs.reshape((-1,) + (*obs_dim,))
         b_actions = actions.reshape((-1,) + (self.action_dim,))
         b_logprobs = logprobs.reshape(-1)
@@ -154,10 +162,10 @@ class AgentIPPO(ActorCriticBase):
 
         # normalize rewards and values
         if self.cfg.algo.value_norm:
-            self.value_rms.update(returns.reshape(-1))
-            b_returns = self.value_rms.normalize(returns.reshape(-1))
-            self.value_rms.update(values.reshape(-1))
-            b_values = self.value_rms.normalize(values.reshape(-1))
+            value_rms.update(returns.reshape(-1))
+            b_returns = value_rms.normalize(returns.reshape(-1))
+            value_rms.update(values.reshape(-1))
+            b_values = value_rms.normalize(values.reshape(-1))
         else:
             b_returns = returns.reshape(-1)
             b_values = values.reshape(-1)
