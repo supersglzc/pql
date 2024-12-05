@@ -6,7 +6,9 @@ import torch.nn as nn
 from torch import Tensor
 from torch.distributions import Independent
 from torch.distributions import Normal
-
+import escnn
+from escnn.nn import FieldType
+from morpho_symm.nn.EMLP import EMLP
 from pql.utils.torch_util import SquashedNormal
 
 
@@ -51,6 +53,66 @@ class DiagGaussianMLPPolicy(MLPNet):
 
     def get_actions(self, x, sample=True):
         mean = self.net(x)
+        log_std = self.logstd.expand_as(mean)
+        std = torch.exp(log_std)
+        action_dist = Independent(Normal(loc=mean, scale=std), 1)
+        if sample:
+            actions = action_dist.rsample()
+        else:
+            actions = mean
+        return actions, action_dist
+
+    def get_actions_logprob_entropy(self, state, sample=True):
+        actions, action_dist = self.get_actions(state, sample=sample)
+        log_prob = action_dist.log_prob(actions)
+        entropy = action_dist.entropy()
+        return actions, action_dist, log_prob, entropy
+
+    def logprob_entropy(self, state, actions):
+        _, action_dist = self.get_actions(state)
+        log_prob = action_dist.log_prob(actions)
+        entropy = action_dist.entropy()
+        return actions, action_dist, log_prob, entropy
+    
+
+class EquivariantMLPNet(nn.Module):
+    def __init__(self, cfg, G, in_dim, out_dim, hidden_layers=None):
+        super().__init__()
+        if isinstance(in_dim, Sequence):
+            in_dim = in_dim[0]
+        if hidden_layers is None:
+            hidden_layers = [512, 256, 128]
+        # generate the field types
+        gspace = escnn.gspaces.no_base_space(G)
+        self.in_field_type = FieldType(gspace, [G.representations[rep] for rep in cfg.task.symmetry.actor_input_fields])
+        assert self.in_field_type.size == in_dim, f"in_dim {in_dim} does not match the size of the input field type {self.in_field_type.size}"
+        self.out_field_type = FieldType(gspace, [G.representations[rep] for rep in cfg.task.symmetry.actor_output_fields])
+        assert self.out_field_type.size == out_dim, f"out_dim {out_dim} does not match the size of the output field type {self.out_field_type.size}"
+        self.net = EMLP(in_type=self.in_field_type,
+                        out_type=self.out_field_type,
+                        num_layers=5,              # Input layer + 3 hidden layers + output/head layer
+                        num_hidden_units=256,      # Number of hidden units per layer
+                        #  activation=escnn.nn.ReLU,  # Activarions must be `EquivariantModules` instances
+                        bias=True             # Use bias in the linear layers
+                        )
+
+    def forward(self, x):
+        return self.net(x)
+    
+
+class DiagGaussianEquivariantMLPPolicy(EquivariantMLPNet):
+    def __init__(self, cfg, G, in_dim, out_dim, hidden_layers=None,
+                 init_log_std=0.):
+        super().__init__(cfg, G, in_dim, out_dim, hidden_layers)
+        self.logstd = nn.Parameter(torch.full((out_dim,), init_log_std))
+
+    def forward(self, x, sample=True):
+        return self.get_actions(x, sample=sample)[0]
+
+    def get_actions(self, x, sample=True):
+        # convert to equivariant field
+        x = self.in_field_type(x)
+        mean = self.net(x).tensor
         log_std = self.logstd.expand_as(mean)
         std = torch.exp(log_std)
         action_dist = Independent(Normal(loc=mean, scale=std), 1)

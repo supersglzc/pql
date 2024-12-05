@@ -9,6 +9,7 @@ from pql.utils.common import load_class_from_path
 from pql.models import model_name_to_path
 from pql.utils.common import Tracker
 from pql.utils.torch_util import RunningMeanStd
+from bidex.utils.symmetry import load_symmetric_system
 
 
 @dataclass
@@ -28,7 +29,11 @@ class ActorCriticBase:
                                          model_name_to_path[self.cfg.algo.act_class])
         cri_class = load_class_from_path(self.cfg.algo.cri_class,
                                          model_name_to_path[self.cfg.algo.cri_class])
-        self.actor = act_class(self.obs_dim, self.action_dim).to(self.cfg.device)
+        if "Equivariant" in self.cfg.algo.act_class:
+            self.G = load_symmetric_system(cfg=self.cfg.task.symmetry)
+            self.actor = act_class(self.cfg, self.G, self.obs_dim, self.action_dim).to(self.cfg.device)
+        else:
+            self.actor = act_class(self.obs_dim, self.action_dim).to(self.cfg.device)
         self.critic = cri_class(self.obs_dim, self.action_dim).to(self.cfg.device)
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
         self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), self.cfg.algo.critic_lr)
