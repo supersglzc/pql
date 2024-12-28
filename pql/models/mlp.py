@@ -76,7 +76,7 @@ class DiagGaussianMLPPolicy(MLPNet):
     
 
 class EquivariantMLPNet(nn.Module):
-    def __init__(self, cfg, G, in_dim, out_dim, hidden_layers=None):
+    def __init__(self, G, input_fields, output_fields, in_dim, out_dim, hidden_layers=None):
         super().__init__()
         if isinstance(in_dim, Sequence):
             in_dim = in_dim[0]
@@ -84,9 +84,9 @@ class EquivariantMLPNet(nn.Module):
             hidden_layers = [512, 256, 128]
         # generate the field types
         gspace = escnn.gspaces.no_base_space(G)
-        self.in_field_type = FieldType(gspace, [G.representations[rep] for rep in cfg.task.symmetry.actor_input_fields])
+        self.in_field_type = FieldType(gspace, [G.representations[rep] for rep in input_fields])
         assert self.in_field_type.size == in_dim, f"in_dim {in_dim} does not match the size of the input field type {self.in_field_type.size}"
-        self.out_field_type = FieldType(gspace, [G.representations[rep] for rep in cfg.task.symmetry.actor_output_fields])
+        self.out_field_type = FieldType(gspace, [G.representations[rep] for rep in output_fields])
         assert self.out_field_type.size == out_dim, f"out_dim {out_dim} does not match the size of the output field type {self.out_field_type.size}"
         self.net = EMLP(in_type=self.in_field_type,
                         out_type=self.out_field_type,
@@ -97,13 +97,14 @@ class EquivariantMLPNet(nn.Module):
                         )
 
     def forward(self, x):
-        return self.net(x)
+        x = self.in_field_type(x)
+        return self.net(x).tensor
     
 
 class DiagGaussianEquivariantMLPPolicy(EquivariantMLPNet):
-    def __init__(self, cfg, G, in_dim, out_dim, hidden_layers=None,
+    def __init__(self, G, input_fields, output_fields, in_dim, out_dim, hidden_layers=None,
                  init_log_std=0.):
-        super().__init__(cfg, G, in_dim, out_dim, hidden_layers)
+        super().__init__(G, input_fields, output_fields, in_dim, out_dim, hidden_layers)
         self.logstd = nn.Parameter(torch.full((out_dim,), init_log_std))
 
     def forward(self, x, sample=True):

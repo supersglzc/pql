@@ -10,6 +10,7 @@ from pql.utils.common import handle_timeout, aggregate_traj_info
 from pql.utils.common import load_class_from_path
 from pql.utils.common import parse_multi_rew
 from pql.models import model_name_to_path
+from bidex.utils.symmetry import load_symmetric_system
 
 @dataclass
 class AgentIPPO(ActorCriticBase):
@@ -21,13 +22,23 @@ class AgentIPPO(ActorCriticBase):
                                          model_name_to_path[self.cfg.algo.act_class])
         cri_class = load_class_from_path(self.cfg.algo.cri_class,
                                          model_name_to_path[self.cfg.algo.cri_class])
-        self.actor = act_class(self.obs_dim[0], self.action_dim).to(self.cfg.device)
-        self.critic = cri_class(self.obs_dim[0], self.action_dim).to(self.cfg.device)
+        if "Equivariant" in self.cfg.algo.act_class:
+            self.G = load_symmetric_system(cfg=self.cfg.task.symmetry)
+            self.actor = act_class(self.G, self.cfg.task.symmetry.actor_input_fields[0], self.cfg.task.symmetry.actor_output_fields[0], self.obs_dim[0], self.action_dim).to(self.cfg.device)
+            self.actor_left = act_class(self.G, self.cfg.task.symmetry.actor_input_fields[1], self.cfg.task.symmetry.actor_output_fields[1], self.obs_dim[1], self.action_dim).to(self.cfg.device)
+        else:
+            self.actor = act_class(self.obs_dim[0], self.action_dim).to(self.cfg.device)
+            self.actor_left = act_class(self.obs_dim[1], self.action_dim).to(self.cfg.device)
+        if "Equivariant" in self.cfg.algo.cri_class:
+            self.G = load_symmetric_system(cfg=self.cfg.task.symmetry)
+            self.critic = cri_class(self.G, self.cfg.task.symmetry.critic_input_fields[0], self.cfg.task.symmetry.critic_output_fields[0], self.obs_dim[0], 1).to(self.cfg.device)
+            self.critic_left = cri_class(self.G, self.cfg.task.symmetry.critic_input_fields[1], self.cfg.task.symmetry.critic_output_fields[1], self.obs_dim[1], 1).to(self.cfg.device)
+        else:
+            self.critic = cri_class(self.obs_dim[0], self.action_dim).to(self.cfg.device)
+            self.critic_left = cri_class(self.obs_dim[1], self.action_dim).to(self.cfg.device)
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
-        self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), self.cfg.algo.critic_lr)
-        self.actor_left = act_class(self.obs_dim[1], self.action_dim).to(self.cfg.device)
-        self.critic_left = cri_class(self.obs_dim[1], self.action_dim).to(self.cfg.device)
         self.actor_optimizer_left = torch.optim.AdamW(self.actor_left.parameters(), self.cfg.algo.actor_lr)
+        self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), self.cfg.algo.critic_lr)
         self.critic_optimizer_left = torch.optim.AdamW(self.critic_left.parameters(), self.cfg.algo.critic_lr)
 
         self.timeout_info = None

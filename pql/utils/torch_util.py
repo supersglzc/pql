@@ -121,5 +121,5 @@ def slice_tensor(tensor, indices):
         return tensor[:, start:end]
     else:
         # For multiple ranges, concatenate the slices along the second dimension
-        slices = [tensor[:, start:end] for start, end in indices]
+        slices = [tensor[:, elements[0]:elements[1]] for elements in indices]
         return torch.cat(slices, dim=1)

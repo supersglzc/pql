@@ -29,14 +29,19 @@ class ActorCriticBase:
                                          model_name_to_path[self.cfg.algo.act_class])
         cri_class = load_class_from_path(self.cfg.algo.cri_class,
                                          model_name_to_path[self.cfg.algo.cri_class])
-        if "Equivariant" in self.cfg.algo.act_class:
-            self.G = load_symmetric_system(cfg=self.cfg.task.symmetry)
-            self.actor = act_class(self.cfg, self.G, self.obs_dim, self.action_dim).to(self.cfg.device)
-        else:
-            self.actor = act_class(self.obs_dim, self.action_dim).to(self.cfg.device)
-        self.critic = cri_class(self.obs_dim, self.action_dim).to(self.cfg.device)
-        self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
-        self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), self.cfg.algo.critic_lr)
+        if not self.cfg.algo.multi_agent:
+            if "Equivariant" in self.cfg.algo.act_class:
+                self.G = load_symmetric_system(cfg=self.cfg.task.symmetry)
+                self.actor = act_class(self.G, self.cfg.task.symmetry.actor_input_fields, self.cfg.task.symmetry.actor_output_fields, self.obs_dim, self.action_dim).to(self.cfg.device)
+            else:
+                self.actor = act_class(self.obs_dim, self.action_dim).to(self.cfg.device)
+            if "Equivariant" in self.cfg.algo.cri_class and not self.cfg.algo.multi_agent:
+                self.G = load_symmetric_system(cfg=self.cfg.task.symmetry)
+                self.critic = cri_class(self.G, self.cfg.task.symmetry.critic_input_fields, self.cfg.task.symmetry.critic_output_fields, self.obs_dim, self.action_dim).to(self.cfg.device)
+            else:
+                self.critic = cri_class(self.obs_dim, self.action_dim).to(self.cfg.device)
+            self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
+            self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), self.cfg.algo.critic_lr)
 
         self.current_returns = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
         self.current_lengths = torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=self.cfg.device)
