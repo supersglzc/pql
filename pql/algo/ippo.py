@@ -5,12 +5,12 @@ import torch
 from copy import deepcopy
 
 from pql.algo.ac_base import ActorCriticBase
-from pql.utils.torch_util import RunningMeanStd, slice_tensor
+from pql.utils.torch_util import RunningMeanStd
 from pql.utils.common import handle_timeout, aggregate_traj_info
 from pql.utils.common import load_class_from_path
 from pql.utils.common import parse_multi_rew
 from pql.models import model_name_to_path
-from bidex.utils.symmetry import load_symmetric_system
+from bidex.utils.symmetry import load_symmetric_system, SymmetryManager, slice_tensor
 
 @dataclass
 class AgentIPPO(ActorCriticBase):
@@ -47,6 +47,8 @@ class AgentIPPO(ActorCriticBase):
             self.value_rms = RunningMeanStd(shape=(1), device=self.device)
             self.value_rms_left = RunningMeanStd(shape=(1), device=self.device)
 
+        self.symmetry_manager = SymmetryManager(self.cfg)
+
     def get_actions(self, obs, actor, critic, value_rms):
         if self.cfg.algo.obs_norm:
             obs = self.obs_rms.normalize(obs)
@@ -79,17 +81,18 @@ class AgentIPPO(ActorCriticBase):
         for step in range(timesteps):
             if self.cfg.algo.obs_norm:
                 self.obs_rms.update(ob)
-            ob_right = slice_tensor(ob, self.cfg.task.multi.single_agent_obs_idx[0])
-            ob_left = slice_tensor(ob, self.cfg.task.multi.single_agent_obs_idx[1])
+            cur_symmetry_tracker = env.unwrapped.symmetry_tracker
+            ob_right, ob_left = self.symmetry_manager.get_multi_agent_obs(ob, cur_symmetry_tracker)
             traj_obs[step] = deepcopy(ob_right)
             traj_obs_left[step] = deepcopy(ob_left)
             traj_dones[step] = dones
 
             action_right, logprob_right, val_right = self.get_actions(ob_right, self.actor, self.critic, self.value_rms)
             action_left, logprob_left, val_left = self.get_actions(ob_left, self.actor_left, self.critic_left, self.value_rms_left)
-            action = torch.cat([action_right, action_left], dim=-1)
+            action = self.symmetry_manager.get_execute_action(action_right, action_left, cur_symmetry_tracker)
             next_ob, reward, done, info = env.step(action)
-            reward_right, reward_left = parse_multi_rew(info['detailed_reward'], self.cfg)
+
+            reward_right, reward_left = self.symmetry_manager.get_multi_agent_rew(info['detailed_reward'], cur_symmetry_tracker)
             self.update_tracker(reward_right, done, info)
                 
             traj_actions[step] = action_right
@@ -113,8 +116,7 @@ class AgentIPPO(ActorCriticBase):
         self.obs = ob
         self.dones = dones
         
-        ob_right = slice_tensor(ob, self.cfg.task.multi.single_agent_obs_idx[0])
-        ob_left = slice_tensor(ob, self.cfg.task.multi.single_agent_obs_idx[1])
+        ob_right, ob_left = self.symmetry_manager.get_multi_agent_obs(ob, env.unwrapped.symmetry_tracker)
         data = self.compute_adv((traj_obs, traj_actions, traj_logprobs, traj_rewards,
                                  traj_dones, traj_values, ob_right, dones), gae=self.cfg.algo.use_gae, timeout=self.timeout_info, critic=self.critic, value_rms=self.value_rms)
         data_left = self.compute_adv((traj_obs_left, traj_actions_left, traj_logprobs_left, traj_rewards_left,
