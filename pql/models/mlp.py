@@ -130,10 +130,10 @@ class DiagGaussianEquivariantMLPPolicy(EquivariantMLPNet):
         return actions, action_dist, log_prob, entropy
 
     def logprob_entropy(self, state, actions):
-        _, action_dist = self.get_actions(state)
+        new_actions, action_dist = self.get_actions(state)
         log_prob = action_dist.log_prob(actions)
         entropy = action_dist.entropy()
-        return actions, action_dist, log_prob, entropy
+        return new_actions, action_dist, log_prob, entropy
 
 
 class TanhDiagGaussianMLPPolicy(MLPNet):
