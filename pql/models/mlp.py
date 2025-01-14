@@ -81,7 +81,7 @@ class EquivariantMLPNet(nn.Module):
         if isinstance(in_dim, Sequence):
             in_dim = in_dim[0]
         if hidden_layers is None:
-            hidden_layers = [512, 256, 128]
+            hidden_layers = 256
         # generate the field types
         gspace = escnn.gspaces.no_base_space(G)
         self.in_field_type = FieldType(gspace, [G.representations[rep] for rep in input_fields])
@@ -91,7 +91,7 @@ class EquivariantMLPNet(nn.Module):
         self.net = EMLP(in_type=self.in_field_type,
                         out_type=self.out_field_type,
                         num_layers=5,              # Input layer + 3 hidden layers + output/head layer
-                        num_hidden_units=256,      # Number of hidden units per layer
+                        num_hidden_units=hidden_layers,      # Number of hidden units per layer
                         #  activation=escnn.nn.ReLU,  # Activarions must be `EquivariantModules` instances
                         bias=True             # Use bias in the linear layers
                         )

@@ -14,7 +14,7 @@ from pql.models import model_name_to_path
 from bidex.utils.symmetry import load_symmetric_system, SymmetryManager, slice_tensor
 
 @dataclass
-class AgentIPPOTeam(ActorCriticBase):
+class AgentIPPOTeam2(ActorCriticBase):
     def __post_init__(self):
         super().__post_init__()
         self.obs_dim = list(self.cfg.task.multi.single_agent_obs_dim)
@@ -28,17 +28,17 @@ class AgentIPPOTeam(ActorCriticBase):
             self.G = load_symmetric_system(cfg=self.cfg.task.symmetry)
             self.actor = act_class(self.G, self.cfg.task.symmetry.actor_input_fields[0], self.cfg.task.symmetry.actor_output_fields[0], self.obs_dim[0], self.action_dim).to(self.cfg.device)
             self.actor_left = act_class(self.G, self.cfg.task.symmetry.actor_input_fields[1], self.cfg.task.symmetry.actor_output_fields[1], self.obs_dim[1], self.action_dim).to(self.cfg.device)
-            self.actor_tot = act_class(self.G, self.cfg.task.symmetry.actor_input_fields[2], self.cfg.task.symmetry.actor_output_fields[2], self.obs_dim_tot, self.action_dim*2).to(self.cfg.device)
+            self.actor_team = act_class(self.G, self.cfg.task.symmetry.actor_input_fields[0], self.cfg.task.symmetry.actor_output_fields[0], self.obs_dim[0], self.action_dim).to(self.cfg.device)
+            self.actor_left_team = act_class(self.G, self.cfg.task.symmetry.actor_input_fields[1], self.cfg.task.symmetry.actor_output_fields[1], self.obs_dim[1], self.action_dim).to(self.cfg.device)
         else:
             self.actor = act_class(self.obs_dim[0], self.action_dim).to(self.cfg.device)
             self.actor_left = act_class(self.obs_dim[1], self.action_dim).to(self.cfg.device)
-            self.actor_tot = act_class(self.obs_dim_tot, self.action_dim*2).to(self.cfg.device)
-
         if "Equivariant" in self.cfg.algo.cri_class:
             self.G = load_symmetric_system(cfg=self.cfg.task.symmetry)
             self.critic = cri_class(self.G, self.cfg.task.symmetry.critic_input_fields[0], self.cfg.task.symmetry.critic_output_fields[0], self.obs_dim[0], 1).to(self.cfg.device)
             self.critic_left = cri_class(self.G, self.cfg.task.symmetry.critic_input_fields[1], self.cfg.task.symmetry.critic_output_fields[1], self.obs_dim[1], 1).to(self.cfg.device)
             self.critic_tot = cri_class(self.G, self.cfg.task.symmetry.critic_input_fields[2], self.cfg.task.symmetry.critic_output_fields[2], self.obs_dim_tot, 1).to(self.cfg.device)
+            self.critic_team = cri_class(self.G, self.cfg.task.symmetry.critic_input_fields[2], self.cfg.task.symmetry.critic_output_fields[2], self.obs_dim_tot, 1).to(self.cfg.device)
         else:
             self.critic = cri_class(self.obs_dim[0], self.action_dim).to(self.cfg.device)
             self.critic_left = cri_class(self.obs_dim[1], self.action_dim).to(self.cfg.device)
@@ -46,10 +46,12 @@ class AgentIPPOTeam(ActorCriticBase):
 
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
         self.actor_optimizer_left = torch.optim.AdamW(self.actor_left.parameters(), self.cfg.algo.actor_lr)
-        self.actor_optimizer_tot = torch.optim.AdamW(self.actor_tot.parameters(), self.cfg.algo.actor_lr)
+        self.actor_optimizer_team = torch.optim.AdamW(self.actor_team.parameters(), self.cfg.algo.actor_lr)
+        self.actor_optimizer_left_team = torch.optim.AdamW(self.actor_left_team.parameters(), self.cfg.algo.actor_lr)
         self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), self.cfg.algo.critic_lr)
         self.critic_optimizer_left = torch.optim.AdamW(self.critic_left.parameters(), self.cfg.algo.critic_lr)
         self.critic_optimizer_tot = torch.optim.AdamW(self.critic_tot.parameters(), self.cfg.algo.critic_lr)
+        self.critic_optimizer_team = torch.optim.AdamW(self.critic_team.parameters(), self.cfg.algo.critic_lr)
 
         if self.cfg.task.multi.same_policy:
             self.actor_left = self.actor
@@ -65,6 +67,7 @@ class AgentIPPOTeam(ActorCriticBase):
             self.value_rms = RunningMeanStd(shape=(1), device=self.device)
             self.value_rms_left = RunningMeanStd(shape=(1), device=self.device)
             self.value_rms_tot = RunningMeanStd(shape=(1), device=self.device)
+            self.value_rms_team = RunningMeanStd(shape=(1), device=self.device)
         self.symmetry_manager = SymmetryManager(self.cfg)
 
     def reset_agent(self):
@@ -115,7 +118,7 @@ class AgentIPPOTeam(ActorCriticBase):
             obs = self.obs_rms.normalize(obs)
         actions, action_dist, logprobs, entropy = actor.get_actions_logprob_entropy(obs)
         value = critic(obs)
-        if self.cfg.algo.value_norm:
+        if self.cfg.algo.value_norm and value_rms is not None:
             value_rms.update(value)
             value = value_rms.unnormalize(value)
         return actions, logprobs, value.flatten()
@@ -134,25 +137,29 @@ class AgentIPPOTeam(ActorCriticBase):
         obs_dim_tot = (self.obs_dim_tot,) if isinstance(self.obs_dim_tot, int) else self.obs_dim_tot
         traj_obs = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim,), device=self.device)
         traj_obs_left = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim_left,), device=self.device)
-        traj_obs_ind = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim_tot,), device=self.device)
         traj_obs_tot = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim_tot,), device=self.device)
         traj_actions = torch.zeros((timesteps, self.cfg.num_envs//2) + (self.action_dim,), device=self.device)
         traj_actions_left = torch.zeros((timesteps, self.cfg.num_envs//2) + (self.action_dim,), device=self.device)
-        traj_actions_ind = torch.zeros((timesteps, self.cfg.num_envs//2) + (self.action_dim*2,), device=self.device)
-        traj_actions_tot = torch.zeros((timesteps, self.cfg.num_envs//2) + (self.action_dim*2,), device=self.device)
         traj_logprobs = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
         traj_logprobs_left = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
-        traj_logprobs_tot = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
         traj_rewards = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
         traj_rewards_left = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
-        traj_rewards_ind = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
         traj_rewards_tot = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
         traj_dones = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
-        traj_dones_tot = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
         traj_values = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
         traj_values_left = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
-        traj_values_ind = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
         traj_values_tot = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
+
+        traj_obs_team = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim,), device=self.device)
+        traj_obs_left_team = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim_left,), device=self.device)
+        traj_obs_tot_team = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim_tot,), device=self.device)
+        traj_actions_team = torch.zeros((timesteps, self.cfg.num_envs//2) + (self.action_dim,), device=self.device)
+        traj_actions_left_team = torch.zeros((timesteps, self.cfg.num_envs//2) + (self.action_dim,), device=self.device)
+        traj_logprobs_team = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
+        traj_logprobs_left_team = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
+        traj_rewards_tot_team = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
+        traj_dones_team = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
+        traj_values_tot_team = torch.zeros((timesteps, self.cfg.num_envs//2), device=self.device)
         infos = []
 
         ob = self.obs
@@ -161,41 +168,48 @@ class AgentIPPOTeam(ActorCriticBase):
             if self.cfg.algo.obs_norm:
                 self.obs_rms.update(ob)
             cur_symmetry_tracker = env.unwrapped.symmetry_tracker
-            ob_right, ob_left = self.symmetry_manager.get_multi_agent_obs(ob[:self.cfg.num_envs//2], cur_symmetry_tracker)
-            traj_obs[step] = deepcopy(ob_right)
-            traj_obs_left[step] = deepcopy(ob_left)
-            traj_obs_ind[step] = deepcopy(ob[:self.cfg.num_envs//2])
-            traj_obs_tot[step] = deepcopy(ob[self.cfg.num_envs//2:])
+            ob_right, ob_left = self.symmetry_manager.get_multi_agent_obs(ob, cur_symmetry_tracker)
+            traj_obs[step] = deepcopy(ob_right[:self.cfg.num_envs//2])
+            traj_obs_left[step] = deepcopy(ob_left[:self.cfg.num_envs//2])
+            traj_obs_tot[step] = deepcopy(ob[:self.cfg.num_envs//2])
             traj_dones[step] = dones[:self.cfg.num_envs//2]
-            traj_dones_tot[step] = dones[self.cfg.num_envs//2:]
+            traj_obs_team[step] = deepcopy(ob_right[self.cfg.num_envs//2:])
+            traj_obs_left_team[step] = deepcopy(ob_left[self.cfg.num_envs//2:])
+            traj_obs_tot_team[step] = deepcopy(ob[self.cfg.num_envs//2:])
+            traj_dones_team[step] = dones[self.cfg.num_envs//2:]
 
-            action_right, logprob_right, val_right = self.get_actions(ob_right, self.actor, self.critic, self.value_rms)
-            action_left, logprob_left, val_left = self.get_actions(ob_left, self.actor_left, self.critic_left, self.value_rms_left)
-            action_tot, logprob_tot, val_tot = self.get_actions(ob[self.cfg.num_envs//2:], self.actor_tot, self.critic_tot, self.value_rms_tot)
-            val_ind = self.get_values(ob[:self.cfg.num_envs//2], self.critic_tot, self.value_rms_tot)
-            action_ind = self.symmetry_manager.get_execute_action(action_right, action_left, cur_symmetry_tracker)
-            action_executed = torch.cat([action_ind, action_tot], dim=0)
-            next_ob, reward, done, info = env.step(action_executed)
+            action_right_ind, logprob_right, val_right = self.get_actions(ob_right[:self.cfg.num_envs//2], self.actor, self.critic, self.value_rms)
+            action_left_ind, logprob_left, val_left = self.get_actions(ob_left[:self.cfg.num_envs//2], self.actor_left, self.critic_left, self.value_rms_left)
+            val_tot = self.get_values(ob[:self.cfg.num_envs//2], self.critic_tot, self.value_rms_tot)
+            action_right_team, logprob_right_team, _ = self.get_actions(ob_right[self.cfg.num_envs//2:], self.actor, self.critic, None)
+            action_left_team, logprob_left_team, _ = self.get_actions(ob_left[self.cfg.num_envs//2:], self.actor_left, self.critic_left, None)
+            val_tot_team = self.get_values(ob[self.cfg.num_envs//2:], self.critic_team, self.value_rms_team)
+            action_right = torch.cat([action_right_ind, action_right_team], dim=0)
+            action_left = torch.cat([action_left_ind, action_left_team], dim=0)
+            action = self.symmetry_manager.get_execute_action(action_right, action_left, cur_symmetry_tracker)
+            next_ob, reward, done, info = env.step(action)
 
             reward_right, reward_left, reward_tot = self.symmetry_manager.get_multi_agent_rew(info['detailed_reward'], cur_symmetry_tracker, if_tot=True)
             self.update_tracker(done[:self.cfg.num_envs//2], info)
             self.update_tracker_team(done[self.cfg.num_envs//2:], info)
                 
-            traj_actions[step] = action_right
-            traj_actions_left[step] = action_left
-            traj_actions_ind[step] = action_ind
-            traj_actions_tot[step] = action_tot
+            traj_actions[step] = action_right_ind
+            traj_actions_left[step] = action_left_ind
             traj_logprobs[step] = logprob_right
             traj_logprobs_left[step] = logprob_left
-            traj_logprobs_tot[step] = logprob_tot
             traj_rewards[step] = reward_right[:self.cfg.num_envs//2]
             traj_rewards_left[step] = reward_left[:self.cfg.num_envs//2]
-            traj_rewards_ind[step] = reward_tot[:self.cfg.num_envs//2]
-            traj_rewards_tot[step] = reward_tot[self.cfg.num_envs//2:]
+            traj_rewards_tot[step] = reward_tot[:self.cfg.num_envs//2]
             traj_values[step] = val_right
             traj_values_left[step] = val_left
-            traj_values_ind[step] = val_ind
             traj_values_tot[step] = val_tot
+
+            traj_actions_team[step] = action_right_team
+            traj_actions_left_team[step] = action_left_team
+            traj_logprobs_team[step] = logprob_right_team
+            traj_logprobs_left_team[step] = logprob_left_team
+            traj_rewards_tot_team[step] = reward_tot[self.cfg.num_envs//2:]
+            traj_values_tot_team[step] = val_tot_team
             infos.append(deepcopy(info))
             ob = next_ob
             dones = done
@@ -209,21 +223,23 @@ class AgentIPPOTeam(ActorCriticBase):
         self.obs = ob
         self.dones = dones
         
-        ob_right, ob_left = self.symmetry_manager.get_multi_agent_obs(ob[:self.cfg.num_envs//2], env.unwrapped.symmetry_tracker)
+        ob_right, ob_left = self.symmetry_manager.get_multi_agent_obs(ob, env.unwrapped.symmetry_tracker)
         data = self.compute_adv((traj_obs, traj_actions, traj_logprobs, traj_rewards,
-                                 traj_dones, traj_values, ob_right, dones[:self.cfg.num_envs//2]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, :self.cfg.num_envs//2], critic=self.critic, value_rms=self.value_rms)
+                                 traj_dones, traj_values, ob_right[:self.cfg.num_envs//2], dones[:self.cfg.num_envs//2]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, :self.cfg.num_envs//2], critic=self.critic, value_rms=self.value_rms)
         data_left = self.compute_adv((traj_obs_left, traj_actions_left, traj_logprobs_left, traj_rewards_left,
-                                 traj_dones, traj_values_left, ob_left, dones[:self.cfg.num_envs//2]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, :self.cfg.num_envs//2], critic=self.critic_left, value_rms=self.value_rms_left)
-        data_tot = self.compute_adv((traj_obs_tot, traj_actions_tot, traj_logprobs_tot, traj_rewards_tot,
-                                 traj_dones_tot, traj_values_tot, ob[self.cfg.num_envs//2:], dones[self.cfg.num_envs//2:]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, self.cfg.num_envs//2:], critic=self.critic_tot, value_rms=self.value_rms_tot)
-        data_ind = self.compute_adv((traj_obs_ind, traj_actions_ind, None, traj_rewards_ind,
-                                 traj_dones, traj_values_ind, ob[:self.cfg.num_envs//2], dones[:self.cfg.num_envs//2]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, :self.cfg.num_envs//2], critic=self.critic_tot, value_rms=self.value_rms_tot)
-        return [data, data_left, data_tot, data_ind], timesteps * self.cfg.num_envs
+                                 traj_dones, traj_values_left, ob_left[:self.cfg.num_envs//2], dones[:self.cfg.num_envs//2]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, :self.cfg.num_envs//2], critic=self.critic_left, value_rms=self.value_rms_left)
+        data_tot = self.compute_adv((traj_obs_tot, None, None, traj_rewards_tot,
+                                 traj_dones, traj_values_tot, ob[:self.cfg.num_envs//2], dones[:self.cfg.num_envs//2]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, :self.cfg.num_envs//2], critic=self.critic_tot, value_rms=self.value_rms_tot)
+        
+        data_team = [traj_obs_team.reshape(-1, traj_obs_team.shape[-1]), traj_actions_team.reshape(-1, traj_actions_team.shape[-1]), traj_logprobs_team.reshape(-1)]
+        data_left_team = [traj_obs_left_team.reshape(-1, traj_obs_left_team.shape[-1]), traj_actions_left_team.reshape(-1, traj_actions_left_team.shape[-1]), traj_logprobs_left_team.reshape(-1)]
+        data_tot_team = self.compute_adv((traj_obs_tot_team, None, None, traj_rewards_tot_team,
+                                 traj_dones_team, traj_values_tot_team, ob[self.cfg.num_envs//2:], dones[self.cfg.num_envs//2:]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, self.cfg.num_envs//2:], critic=self.critic_team, value_rms=self.value_rms_team)
+        return [data, data_left, data_tot, data_team, data_left_team, data_tot_team], timesteps * self.cfg.num_envs
 
     def compute_adv(self, buffer, gae=True, timeout=None, critic=None, value_rms=None):
         with torch.no_grad():
             obs, actions, logprobs, rewards, dones, values, next_obs, next_done = buffer
-            action_dim = actions.shape[-1]
             obs_dim = (obs.shape[-1],)
             timesteps = obs.shape[0]
             if self.cfg.algo.obs_norm:
@@ -266,7 +282,7 @@ class AgentIPPOTeam(ActorCriticBase):
                 advantages = returns - values
 
         b_obs = obs.reshape((-1,) + (*obs_dim,))
-        b_actions = actions.reshape((-1,) + (action_dim,)) if actions is not None else None
+        b_actions = actions.reshape((-1,) + (self.action_dim,)) if actions is not None else None
         b_logprobs = logprobs.reshape(-1) if logprobs is not None else None
         b_advantages = advantages.reshape(-1)
 
@@ -285,8 +301,10 @@ class AgentIPPOTeam(ActorCriticBase):
     def update_net(self, data):
         b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_values = data[0]
         b_obs_left, b_actions_left, b_logprobs_left, b_advantages_left, b_returns_left, b_values_left = data[1]
-        b_obs_tot, b_actions_tot, b_logprobs_tot, b_advantages_tot, b_returns_tot, b_values_tot = data[2]
-        b_obs_ind, b_actions_ind, _, b_advantages_ind, b_returns_ind, b_values_ind = data[3]
+        b_obs_tot, _, _, b_advantages_tot, b_returns_tot, b_values_tot = data[2]
+        b_obs_team, b_actions_team, b_logprobs_team = data[3]
+        b_obs_left_team, b_actions_left_team, b_logprobs_left_team = data[4]
+        b_obs_tot_team, _, _, b_advantages_tot_team, b_returns_tot_team, b_values_tot_team = data[5]
         buffer_size = b_obs.size()[0]
         assert buffer_size >= self.cfg.algo.batch_size
 
@@ -296,7 +314,6 @@ class AgentIPPOTeam(ActorCriticBase):
         critic_loss_list_left = list()
         actor_loss_list_left = list()
         critic_loss_list_tot = list()
-        actor_loss_list_tot = list()
         for _ in range(self.cfg.algo.update_times):
             np.random.shuffle(b_inds)
             for start in range(0, buffer_size, self.cfg.algo.batch_size):
@@ -309,60 +326,60 @@ class AgentIPPOTeam(ActorCriticBase):
                     obs = b_obs[mb_inds]
                     obs_left = b_obs_left[mb_inds]
                     obs_tot = b_obs_tot[mb_inds]
-                    obs_ind = b_obs_ind[mb_inds]
-                # compute new logprob
+                    obs_team = b_obs_team[mb_inds]
+                    obs_left_team = b_obs_left_team[mb_inds]
+                    obs_tot_team = b_obs_tot_team[mb_inds]
                 _, action_dist, newlogprob, entropy = self.actor.logprob_entropy(obs, b_actions[mb_inds])
                 _, action_dist_left, newlogprob_left, entropy_left = self.actor_left.logprob_entropy(obs_left, b_actions_left[mb_inds])
-                _, action_dist_tot, newlogprob_tot, entropy_tot = self.actor_tot.logprob_entropy(obs_tot, b_actions_tot[mb_inds])
-                _, action_dist_ind, newlogprob_ind, entropy_ind = self.actor_tot.logprob_entropy(obs_ind, b_actions_ind[mb_inds])
-                # compute logratio
+                _, action_dist_team, newlogprob_team, entropy_team = self.actor.logprob_entropy(obs_team, b_actions_team[mb_inds])
+                _, action_dist_left_team, newlogprob_left_team, entropy_left_team = self.actor_left.logprob_entropy(obs_left_team, b_actions_left_team[mb_inds])
                 logratio = newlogprob - b_logprobs[mb_inds]
                 logratio_left = newlogprob_left - b_logprobs_left[mb_inds]
-                logratio_tot = newlogprob_tot - b_logprobs_tot[mb_inds]
-                logratio_ind = newlogprob_ind - (b_logprobs[mb_inds] + b_logprobs_left[mb_inds])
-                # compute ratio
+                logratio_team = newlogprob_team - b_logprobs_team[mb_inds]
+                logratio_left_team = newlogprob_left_team - b_logprobs_left_team[mb_inds]
                 ratio = logratio.exp()
                 ratio_left = logratio_left.exp()
-                ratio_tot = logratio_tot.exp()
-                ratio_ind = logratio_ind.exp()
-                # compute advantage
+                ratio_team = logratio_team.exp()
+                ratio_left_team = logratio_left_team.exp()
                 mb_advantages = b_advantages[mb_inds]
                 mb_advantages_left = b_advantages_left[mb_inds]
                 mb_advantages_tot = b_advantages_tot[mb_inds]
-                mb_advantages_ind = b_advantages_ind[mb_inds]
-                # normalize advantage
+                mb_advantages_tot_team = b_advantages_tot_team[mb_inds]
                 mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
                 mb_advantages_left = (mb_advantages_left - mb_advantages_left.mean()) / (mb_advantages_left.std() + 1e-8)
                 mb_advantages_tot = (mb_advantages_tot - mb_advantages_tot.mean()) / (mb_advantages_tot.std() + 1e-8)
-                mb_advantages_ind = (mb_advantages_ind - mb_advantages_ind.mean()) / (mb_advantages_ind.std() + 1e-8)
-                # stack advantages
-                # mb_advantages_tot = torch.cat([mb_advantages_tot, mb_advantages_ind], dim=0)
-                # ratio_tot = torch.cat([ratio_tot, ratio_ind], dim=0)
-                # compute actor loss unclipped
+                mb_advantages_tot_team = (mb_advantages_tot_team - mb_advantages_tot_team.mean()) / (mb_advantages_tot_team.std() + 1e-8)
                 actor_loss1 = -mb_advantages * ratio
                 actor_loss1_left = -mb_advantages_left * ratio_left
-                actor_loss1_tot = -mb_advantages_tot * ratio_tot            
-                # compute actor loss clipped
+                actor_loss1_tot = -mb_advantages_tot * ratio
+                actor_loss1_left_tot = -mb_advantages_tot * ratio_left
                 actor_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.cfg.algo.ratio_clip, 1 + self.cfg.algo.ratio_clip)
                 actor_loss2_left = -mb_advantages_left * torch.clamp(ratio_left, 1 - self.cfg.algo.ratio_clip, 1 + self.cfg.algo.ratio_clip)
-                actor_loss2_tot = -mb_advantages_tot * torch.clamp(ratio_tot, 1 - self.cfg.algo.ratio_clip, 1 + self.cfg.algo.ratio_clip)
-                # compute actor loss
+                actor_loss2_tot = -mb_advantages_tot * torch.clamp(ratio, 1 - self.cfg.algo.ratio_clip, 1 + self.cfg.algo.ratio_clip)
+                actor_loss2_left_tot = -mb_advantages_tot * torch.clamp(ratio_left, 1 - self.cfg.algo.ratio_clip, 1 + self.cfg.algo.ratio_clip)
                 actor_loss = torch.max(actor_loss1, actor_loss2).mean()
                 actor_loss_left = torch.max(actor_loss1_left, actor_loss2_left).mean()
                 actor_loss_tot = torch.max(actor_loss1_tot, actor_loss2_tot).mean()
-                # compute imitation loss
-                imitation_loss = -newlogprob_ind.mean()
-                # compute critic loss
+                actor_loss_left_tot = torch.max(actor_loss1_left_tot, actor_loss2_left_tot).mean()
+                actor_loss1_team = -mb_advantages_tot_team * ratio_team
+                actor_loss1_left_team = -mb_advantages_tot_team * ratio_left_team
+                actor_loss2_team = -mb_advantages_tot_team * torch.clamp(ratio_team, 1 - self.cfg.algo.ratio_clip, 1 + self.cfg.algo.ratio_clip)
+                actor_loss2_left_team = -mb_advantages_tot_team * torch.clamp(ratio_left_team, 1 - self.cfg.algo.ratio_clip, 1 + self.cfg.algo.ratio_clip)
+                actor_loss_team = torch.max(actor_loss1_team, actor_loss2_team).mean()
+                actor_loss_left_team = torch.max(actor_loss1_left_team, actor_loss2_left_team).mean()
                 newvalue = self.critic(obs)
                 newvalue = newvalue.view(-1)
                 newvalue_left = self.critic_left(obs_left)
                 newvalue_left = newvalue_left.view(-1)
                 newvalue_tot = self.critic_tot(obs_tot)
                 newvalue_tot = newvalue_tot.view(-1)
+                newvalue_team = self.critic_team(obs_tot_team)
+                newvalue_team = newvalue_team.view(-1)
                 if self.cfg.algo.value_clip:
                     critic_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
                     critic_loss_unclipped_left = (newvalue_left - b_returns_left[mb_inds]) ** 2
                     critic_loss_unclipped_tot = (newvalue_tot - b_returns_tot[mb_inds]) ** 2
+                    critic_loss_unclipped_team = (newvalue_team - b_returns_tot_team[mb_inds]) ** 2
                     critic_clipped = b_values[mb_inds] + torch.clamp(
                         newvalue - b_values[mb_inds],
                         -self.cfg.algo.ratio_clip,
@@ -378,21 +395,27 @@ class AgentIPPOTeam(ActorCriticBase):
                         -self.cfg.algo.ratio_clip,
                         self.cfg.algo.ratio_clip,
                     )
+                    critic_clipped_tot_team = b_values_tot_team[mb_inds] + torch.clamp(
+                        newvalue_team - b_values_tot_team[mb_inds],
+                        -self.cfg.algo.ratio_clip,
+                        self.cfg.algo.ratio_clip,
+                    )
                     critic_loss_clipped = (critic_clipped - b_returns[mb_inds]) ** 2
                     critic_loss_clipped_left = (critic_clipped_left - b_returns_left[mb_inds]) ** 2
                     critic_loss_clipped_tot = (critic_clipped_tot - b_returns_tot[mb_inds]) ** 2
+                    critic_loss_clipped_tot_team = (critic_clipped_tot_team - b_returns_tot_team[mb_inds]) ** 2
                     critic_loss = 0.5 * torch.max(critic_loss_unclipped, critic_loss_clipped).mean()
                     critic_loss_left = 0.5 * torch.max(critic_loss_unclipped_left, critic_loss_clipped_left).mean()
                     critic_loss_tot = 0.5 * torch.max(critic_loss_unclipped_tot, critic_loss_clipped_tot).mean()
+                    critic_loss_tot_team = 0.5 * torch.max(critic_loss_unclipped_team, critic_loss_clipped_tot_team).mean()
                 else:
                     critic_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
                     critic_loss_left = 0.5 * ((newvalue_left - b_returns_left[mb_inds]) ** 2).mean()
                     critic_loss_tot = 0.5 * ((newvalue_tot - b_returns_tot[mb_inds]) ** 2).mean()
 
-                # update actor and critic
                 if self.cfg.task.multi.same_policy:
-                    actor_loss = actor_loss - self.cfg.algo.lambda_entropy * entropy.mean()
-                    actor_loss_left = actor_loss_left - self.cfg.algo.lambda_entropy * entropy_left.mean()
+                    actor_loss = actor_loss + actor_loss_tot - self.cfg.algo.lambda_entropy
+                    actor_loss_left = actor_loss_left + actor_loss_left_tot - self.cfg.algo.lambda_entropy
                     self.optimizer_update(self.actor_optimizer, actor_loss + actor_loss_left)
                     self.optimizer_update(self.critic_optimizer, critic_loss + critic_loss_left)
                     self.optimizer_update(self.critic_optimizer_tot, critic_loss_tot)
@@ -400,21 +423,21 @@ class AgentIPPOTeam(ActorCriticBase):
                     actor_loss_list.append(actor_loss.item())
                     critic_loss_list_tot.append(critic_loss_tot.item())
                 else:
-                    actor_loss = actor_loss - self.cfg.algo.lambda_entropy * entropy.mean()
-                    actor_loss_left = actor_loss_left - self.cfg.algo.lambda_entropy * entropy_left.mean()
-                    actor_loss_tot = actor_loss_tot + 0.01 * imitation_loss - self.cfg.algo.lambda_entropy * entropy_tot.mean()
+                    actor_loss = actor_loss + actor_loss_tot - self.cfg.algo.lambda_entropy
+                    actor_loss_left = actor_loss_left + actor_loss_left_tot - self.cfg.algo.lambda_entropy
                     self.optimizer_update(self.actor_optimizer, actor_loss)
-                    self.optimizer_update(self.critic_optimizer, critic_loss)
                     self.optimizer_update(self.actor_optimizer_left, actor_loss_left)
+                    self.optimizer_update(self.actor_optimizer_team, actor_loss_team)
+                    self.optimizer_update(self.actor_optimizer_left_team, actor_loss_left_team)
+                    self.optimizer_update(self.critic_optimizer, critic_loss)
                     self.optimizer_update(self.critic_optimizer_left, critic_loss_left)
-                    self.optimizer_update(self.actor_optimizer_tot, actor_loss_tot)
                     self.optimizer_update(self.critic_optimizer_tot, critic_loss_tot)
+                    self.optimizer_update(self.critic_optimizer_team, critic_loss_tot_team)
                     critic_loss_list.append(critic_loss.item())
                     actor_loss_list.append(actor_loss.item())
                     critic_loss_list_left.append(critic_loss_left.item())
                     actor_loss_list_left.append(actor_loss_left.item())
                     critic_loss_list_tot.append(critic_loss_tot.item())
-                    actor_loss_list_tot.append(actor_loss_tot.item())
 
         log_info = {
             "train/critic_loss": np.mean(critic_loss_list),
@@ -422,7 +445,6 @@ class AgentIPPOTeam(ActorCriticBase):
             "train/critic_loss_left": np.mean(critic_loss_list_left),
             "train/actor_loss_left": np.mean(actor_loss_list_left),
             "train/critic_loss_tot": np.mean(critic_loss_list_tot),
-            "train/actor_loss_tot": np.mean(actor_loss_list_tot),
             "train/return": self.return_tracker.mean(),
             "train/episode_length": self.step_tracker.mean(),
             "train/success_rate": self.success_tracker.mean(),
