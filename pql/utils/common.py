@@ -91,7 +91,7 @@ def list_class_names(dir_path):
     py_files = [f for f in py_files if f.is_file() and f.name != '__init__.py']
     cls_name_to_path = dict()
     for py_file in py_files:
-        with py_file.open() as f:
+        with py_file.open(encoding="utf-8") as f:
             node = ast.parse(f.read())
         classes_in_file = [n for n in node.body if isinstance(n, ast.ClassDef)]
         cls_names_in_file = [c.name for c in classes_in_file]
