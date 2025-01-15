@@ -8,7 +8,7 @@ from torch.distributions import Independent
 from torch.distributions import Normal
 import escnn
 from escnn.nn import FieldType
-from morpho_symm.nn.EMLP import EMLP
+from pql.models.emlp import EMLP
 from pql.utils.torch_util import SquashedNormal
 
 
