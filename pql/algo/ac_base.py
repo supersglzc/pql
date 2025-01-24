@@ -118,9 +118,9 @@ class ActorCriticBase:
             for key in self.cfg.info_track_keys:
                 log_info[key] = self.info_trackers[key].mean()
 
-    def optimizer_update(self, optimizer, objective):
+    def optimizer_update(self, optimizer, objective, retain_graph=False):
         optimizer.zero_grad(set_to_none=True)
-        objective.backward()
+        objective.backward(retain_graph=retain_graph)
         if self.cfg.algo.max_grad_norm is not None:
             grad_norm = clip_grad_norm_(parameters=optimizer.param_groups[0]["params"],
                                         max_norm=self.cfg.algo.max_grad_norm)
