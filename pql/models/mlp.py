@@ -172,6 +172,10 @@ class TanhDiagGaussianMLPPolicy(MLPNet):
 class TanhMLPPolicy(MLPNet):
     def forward(self, state):
         return super().forward(state).tanh()
+    
+class TanhEquivariantMLPPolicy(EquivariantMLPNet):
+    def forward(self, state, sample=True):
+        return super().forward(state).tanh()
 
 
 class DoubleQ(nn.Module):
@@ -193,6 +197,24 @@ class DoubleQ(nn.Module):
         input_x = torch.cat((state, action), dim=1)
         return self.net_q1(input_x)
     
+
+class DoubleQEquivariant(nn.Module):
+    def __init__(self, G, input_fields, output_fields, state_dim, action_dim, hidden_layers=None):
+        super().__init__()
+        self.net_q1 = EquivariantMLPNet(G, input_fields, output_fields, state_dim + action_dim, 1, hidden_layers)
+        self.net_q2 = EquivariantMLPNet(G, input_fields, output_fields, state_dim + action_dim, 1, hidden_layers)
+
+    def get_q_min(self, state: Tensor, action: Tensor) -> (Tensor, Tensor):
+        return torch.min(*self.get_q1_q2(state, action))  # min Q value
+    
+    def get_q1_q2(self, state: Tensor, action: Tensor) -> (Tensor, Tensor):
+        input_x = torch.cat((state, action), dim=1)
+        return self.net_q1(input_x), self.net_q2(input_x)  # two Q values
+    
+    def get_q1(self, state: Tensor, action: Tensor) -> (Tensor, Tensor):
+        input_x = torch.cat((state, action), dim=1)
+        return self.net_q1(input_x)
+
 
 class DoubleQBatchNorm(nn.Module):
     def __init__(self, state_dim, act_dim):

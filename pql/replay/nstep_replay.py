@@ -9,7 +9,8 @@ class NStepReplay:
                  num_envs: int = 1,
                  nstep: int = 3,
                  device: str = 'cuda',
-                 gamma: float = 0.99
+                 gamma: float = 0.99,
+                 left_agent: bool = False
                  ):
         self.num_envs = num_envs
         self.nstep = nstep
@@ -21,17 +22,24 @@ class NStepReplay:
         self.nstep_count = 0
         self.gamma = gamma
         self.gamma_array = torch.tensor([self.gamma ** i for i in range(self.nstep)]).to(device).view(-1, 1)
+        self.left_agent = left_agent
+        if self.left_agent:
+            self.nstep_buf_reward_left = torch.empty_like(self.nstep_buf_reward)
 
     @torch.no_grad()
-    def add_to_buffer(self, obs, actions, rewards, next_obs, dones):
+    def add_to_buffer(self, obs, actions, rewards, next_obs, dones, reward_left=None):
         if self.nstep > 1:
             obs_list, action_list, reward_list, next_obs_list, done_list = list(), list(), list(), list(), list()
+            if self.left_agent:
+                reward_left_list = list()
             for i in range(obs.shape[1]):
                 self.nstep_buf_obs = self.fifo_shift(self.nstep_buf_obs, obs[:, i])
                 self.nstep_buf_next_obs = self.fifo_shift(self.nstep_buf_next_obs, next_obs[:, i])
                 self.nstep_buf_done = self.fifo_shift(self.nstep_buf_done, dones[:, i])
                 self.nstep_buf_action = self.fifo_shift(self.nstep_buf_action, actions[:, i])
                 self.nstep_buf_reward = self.fifo_shift(self.nstep_buf_reward, rewards[:, i])
+                if self.left_agent:
+                    self.nstep_buf_reward_left = self.fifo_shift(self.nstep_buf_reward_left, reward_left[:, i])
                 self.nstep_count += 1
                 if self.nstep_count < self.nstep:
                     continue
@@ -42,9 +50,17 @@ class NStepReplay:
                                                              nstep_buf_done=self.nstep_buf_done,
                                                              nstep_buf_reward=self.nstep_buf_reward,
                                                              gamma_array=self.gamma_array)
+                
                 reward_list.append(reward)
                 next_obs_list.append(next_ob)
                 done_list.append(done)
+                if self.left_agent:
+                    reward_left, next_ob_left, done_left = compute_nstep_return(nstep_buf_next_obs=self.nstep_buf_next_obs,
+                                                                              nstep_buf_done=self.nstep_buf_done,
+                                                                              nstep_buf_reward=self.nstep_buf_reward_left,
+                                                                              gamma_array=self.gamma_array)
+                    reward_left_list.append(reward_left)
+                    return torch.cat(obs_list), torch.cat(action_list), torch.cat(reward_list), torch.cat(next_obs_list), torch.cat(done_list), torch.cat(reward_left_list)
 
             return torch.cat(obs_list), torch.cat(action_list), torch.cat(reward_list), torch.cat(next_obs_list), torch.cat(done_list)
         else:
