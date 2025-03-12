@@ -138,7 +138,8 @@ class AgentDDPG(ActorCriticBase):
             "train/critic_loss": np.mean(critic_loss_list),
             "train/actor_loss": np.mean(actor_loss_list),
             "train/return": self.return_tracker.mean(),
-            "train/episode_length": self.step_tracker.mean()
+            "train/episode_length": self.step_tracker.mean(),
+            "train/success_rate": self.success_tracker.mean()
         }
         self.add_info_tracker_log(log_info)
         return log_info
