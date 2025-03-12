@@ -264,8 +264,8 @@ class AgentIPPO(ActorCriticBase):
                     critic_loss_list.append(critic_loss.item())
                     actor_loss_list.append(actor_loss.item())
                 else:
-                    actor_loss = actor_loss - self.cfg.algo.lambda_entropy
-                    actor_loss_left = actor_loss_left - self.cfg.algo.lambda_entropy
+                    actor_loss = actor_loss - self.cfg.algo.lambda_entropy * entropy.mean()
+                    actor_loss_left = actor_loss_left - self.cfg.algo.lambda_entropy * entropy_left.mean()
                     self.optimizer_update(self.actor_optimizer, actor_loss)
                     self.optimizer_update(self.critic_optimizer, critic_loss)
                     self.optimizer_update(self.actor_optimizer_left, actor_loss_left)
