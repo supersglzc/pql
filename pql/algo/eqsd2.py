@@ -68,14 +68,18 @@ class AgentEQSD2(ActorCriticBase):
         self.detailed_tracker_team = None
         return self.obs, extras
     
-    def update_tracker(self, done, info):
+    def update_tracker(self, reward, done, info):
+        self.current_returns[:self.cfg.num_envs//2] += reward
+        self.current_lengths[:self.cfg.num_envs//2] += 1
         env_done_indices = torch.where(done)[0]
+        first_half_indices = torch.arange(self.cfg.num_envs//2).to(self.device)
+        global_env_done_indices = first_half_indices[env_done_indices]
         if len(env_done_indices) != 0:
-            self.return_tracker.update(self.current_returns[env_done_indices])
-            self.step_tracker.update(self.current_lengths[env_done_indices])
-            self.success_tracker.update(info['success'][env_done_indices])
-            self.current_returns[env_done_indices] = 0
-            self.current_lengths[env_done_indices] = 0
+            self.return_tracker.update(self.current_returns[global_env_done_indices])
+            self.step_tracker.update(self.current_lengths[global_env_done_indices])
+            self.success_tracker.update(info['success'][global_env_done_indices])
+            self.current_returns[global_env_done_indices] = 0
+            self.current_lengths[global_env_done_indices] = 0
         # reward logger
         if self.detailed_returns is None:
             self.detailed_returns = {}
@@ -89,14 +93,18 @@ class AgentEQSD2(ActorCriticBase):
                 self.detailed_tracker[rew_name].update(self.detailed_returns[rew_name][env_done_indices])
                 self.detailed_returns[rew_name][env_done_indices] = 0
     
-    def update_tracker_team(self, done, info):
+    def update_tracker_team(self, reward, done, info):
+        self.current_returns[self.cfg.num_envs//2:] += reward
+        self.current_lengths[self.cfg.num_envs//2:] += 1
         env_done_indices = torch.where(done)[0]
+        second_half_indices = torch.arange(self.cfg.num_envs//2, self.cfg.num_envs).to(self.device)
+        global_env_done_indices = second_half_indices[env_done_indices]
         if len(env_done_indices) != 0:
-            self.return_tracker.update(self.current_returns[env_done_indices])
-            self.step_tracker.update(self.current_lengths[env_done_indices])
-            self.success_tracker.update(info['success'][env_done_indices])
-            self.current_returns[env_done_indices] = 0
-            self.current_lengths[env_done_indices] = 0
+            self.return_tracker.update(self.current_returns[global_env_done_indices])
+            self.step_tracker.update(self.current_lengths[global_env_done_indices])
+            self.success_tracker.update(info['success'][global_env_done_indices])
+            self.current_returns[global_env_done_indices] = 0
+            self.current_lengths[global_env_done_indices] = 0
         # reward logger
         if self.detailed_returns_team is None:
             self.detailed_returns_team = {}
@@ -199,8 +207,8 @@ class AgentEQSD2(ActorCriticBase):
             next_ob, reward, done, info = env.step(action)
 
             reward_right, reward_left, reward_team = self.symmetry_manager.get_multi_agent_rew(info['detailed_reward'], cur_symmetry_tracker)
-            self.update_tracker(done[:self.cfg.num_envs//2], info)
-            self.update_tracker_team(done[self.cfg.num_envs//2:], info)
+            self.update_tracker(reward_right[:self.cfg.num_envs//2] + reward_left[:self.cfg.num_envs//2], done[:self.cfg.num_envs//2], info)
+            self.update_tracker_team(reward_team[self.cfg.num_envs//2:], done[self.cfg.num_envs//2:], info)
                 
             traj_actions[step] = action_right
             traj_actions_left[step] = action_left
