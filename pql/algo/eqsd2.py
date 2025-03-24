@@ -70,6 +70,12 @@ class AgentEQSD2(ActorCriticBase):
     
     def update_tracker(self, done, info):
         env_done_indices = torch.where(done)[0]
+        if len(env_done_indices) != 0:
+            self.return_tracker.update(self.current_returns[env_done_indices])
+            self.step_tracker.update(self.current_lengths[env_done_indices])
+            self.success_tracker.update(info['success'][env_done_indices])
+            self.current_returns[env_done_indices] = 0
+            self.current_lengths[env_done_indices] = 0
         # reward logger
         if self.detailed_returns is None:
             self.detailed_returns = {}
@@ -85,6 +91,12 @@ class AgentEQSD2(ActorCriticBase):
     
     def update_tracker_team(self, done, info):
         env_done_indices = torch.where(done)[0]
+        if len(env_done_indices) != 0:
+            self.return_tracker.update(self.current_returns[env_done_indices])
+            self.step_tracker.update(self.current_lengths[env_done_indices])
+            self.success_tracker.update(info['success'][env_done_indices])
+            self.current_returns[env_done_indices] = 0
+            self.current_lengths[env_done_indices] = 0
         # reward logger
         if self.detailed_returns_team is None:
             self.detailed_returns_team = {}
