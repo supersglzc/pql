@@ -6,8 +6,8 @@ import pql
 from pql.utils.common import load_class_from_path
 
 
-def load_model(model, model_type, cfg):
-    artifact = wandb.Api().artifact(cfg.artifact)
+def load_model(model, model_type, artifact_cfg):
+    artifact = wandb.Api().artifact(artifact_cfg)
     artifact.download(pql.LIB_PATH)
     logger.warning(f'Load {model_type}')
     weights = torch.load(Path(pql.LIB_PATH, "model.pth"))
