@@ -24,13 +24,13 @@ class AgentEQSD2(ActorCriticBase):
         cri_class = load_class_from_path(self.cfg.algo.cri_class,
                                          model_name_to_path[self.cfg.algo.cri_class])
         self.G = load_symmetric_system(cfg=self.cfg.task.symmetry)
-        self.actor = act_class(self.G, self.cfg.task.symmetry.EQSD.actor_input_fields[0], self.cfg.task.symmetry.EQSD.actor_output_fields[0], self.obs_dim[0], self.action_dim).to(self.cfg.device)
-        self.actor_left = act_class(self.G, self.cfg.task.symmetry.EQSD.actor_input_fields[1], self.cfg.task.symmetry.EQSD.actor_output_fields[1], self.obs_dim[1], self.action_dim).to(self.cfg.device)
-        self.actor_team = act_class(self.G, self.cfg.task.symmetry.EQSD.actor_input_fields[2], self.cfg.task.symmetry.EQSD.actor_output_fields[2], self.obs_dim[2], self.action_dim*2).to(self.cfg.device)
+        self.actor = act_class(self.G, self.cfg.task.symmetry.EQSD2.actor_input_fields[0], self.cfg.task.symmetry.EQSD2.actor_output_fields[0], self.obs_dim[0], self.action_dim).to(self.cfg.device)
+        self.actor_left = act_class(self.G, self.cfg.task.symmetry.EQSD2.actor_input_fields[1], self.cfg.task.symmetry.EQSD2.actor_output_fields[1], self.obs_dim[1], self.action_dim).to(self.cfg.device)
+        self.actor_team = act_class(self.G, self.cfg.task.symmetry.EQSD2.actor_input_fields[2], self.cfg.task.symmetry.EQSD2.actor_output_fields[2], self.obs_dim[2], self.action_dim*2).to(self.cfg.device)
         
-        self.critic = cri_class(self.G, self.cfg.task.symmetry.EQSD.critic_input_fields[0], self.cfg.task.symmetry.EQSD.critic_output_fields[0], self.obs_dim[0], 1).to(self.cfg.device)
-        self.critic_left = cri_class(self.G, self.cfg.task.symmetry.EQSD.critic_input_fields[1], self.cfg.task.symmetry.EQSD.critic_output_fields[1], self.obs_dim[1], 1).to(self.cfg.device)
-        self.critic_team = cri_class(self.G, self.cfg.task.symmetry.EQSD.critic_input_fields[2], self.cfg.task.symmetry.EQSD.critic_output_fields[2], self.obs_dim[2], 1).to(self.cfg.device)
+        self.critic = cri_class(self.G, self.cfg.task.symmetry.EQSD2.critic_input_fields[0], self.cfg.task.symmetry.EQSD2.critic_output_fields[0], self.obs_dim[0], 1).to(self.cfg.device)
+        self.critic_left = cri_class(self.G, self.cfg.task.symmetry.EQSD2.critic_input_fields[1], self.cfg.task.symmetry.EQSD2.critic_output_fields[1], self.obs_dim[1], 1).to(self.cfg.device)
+        self.critic_team = cri_class(self.G, self.cfg.task.symmetry.EQSD2.critic_input_fields[2], self.cfg.task.symmetry.EQSD2.critic_output_fields[2], self.obs_dim[3], 1).to(self.cfg.device)
         
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
         self.actor_optimizer_left = torch.optim.AdamW(self.actor_left.parameters(), self.cfg.algo.actor_lr)
@@ -98,15 +98,18 @@ class AgentEQSD2(ActorCriticBase):
                 self.detailed_tracker_team[rew_name].update(self.detailed_returns_team[rew_name][env_done_indices])
                 self.detailed_returns_team[rew_name][env_done_indices] = 0
     
-    def get_actions(self, obs, actor, critic, value_rms):
+    def get_actions(self, obs, actor, critic=None, value_rms=None):
         if self.cfg.algo.obs_norm:
             obs = self.obs_rms.normalize(obs)
         actions, action_dist, logprobs, entropy = actor.get_actions_logprob_entropy(obs)
-        value = critic(obs)
-        if self.cfg.algo.value_norm:
-            value_rms.update(value)
-            value = value_rms.unnormalize(value)
-        return actions, logprobs, value.flatten()
+        if critic is not None:
+            value = critic(obs)
+            if self.cfg.algo.value_norm:
+                value_rms.update(value)
+                value = value_rms.unnormalize(value)
+            return actions, logprobs, value.flatten()
+        else:
+            return actions, logprobs, None
     
     def get_values(self, obs, critic, value_rms):
         value = critic(obs)
@@ -120,10 +123,13 @@ class AgentEQSD2(ActorCriticBase):
         obs_dim = (self.obs_dim[0],) if isinstance(self.obs_dim[0], int) else self.obs_dim[0]
         obs_dim_left = (self.obs_dim[1],) if isinstance(self.obs_dim[1], int) else self.obs_dim[1]
         obs_dim_team = (self.obs_dim[2],) if isinstance(self.obs_dim[2], int) else self.obs_dim[2]
+        obs_dim_team_critic= (self.obs_dim[3],) if isinstance(self.obs_dim[3], int) else self.obs_dim[3]
         traj_obs = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim,), device=self.device)
         traj_obs_left = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim_left,), device=self.device)
         traj_obs_ind_side = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim_team,), device=self.device)
         traj_obs_team = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim_team,), device=self.device)
+        traj_obs_ind_side_critic = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim_team_critic,), device=self.device)
+        traj_obs_team_critic = torch.zeros((timesteps, self.cfg.num_envs//2) + (*obs_dim_team_critic,), device=self.device)
 
         traj_actions = torch.zeros((timesteps, self.cfg.num_envs//2) + (self.action_dim,), device=self.device)
         traj_actions_left = torch.zeros((timesteps, self.cfg.num_envs//2) + (self.action_dim,), device=self.device)
@@ -156,23 +162,26 @@ class AgentEQSD2(ActorCriticBase):
             if self.cfg.algo.obs_norm:
                 self.obs_rms.update(ob)
             cur_symmetry_tracker = env.unwrapped.symmetry_tracker
-            ob_right, ob_left, ob_team = self.symmetry_manager.get_multi_agent_obs(ob, cur_symmetry_tracker)
+            ob_right, ob_left, ob_team, ob_team_critic = self.symmetry_manager.get_multi_agent_obs(ob, cur_symmetry_tracker)
             traj_obs[step] = deepcopy(ob_right[:self.cfg.num_envs//2])
             traj_obs_left[step] = deepcopy(ob_left[:self.cfg.num_envs//2])
             traj_dones[step] = dones[:self.cfg.num_envs//2]
             traj_obs_team[step] = deepcopy(ob_team[self.cfg.num_envs//2:])
+            traj_obs_team_critic[step] = deepcopy(ob_team_critic[self.cfg.num_envs//2:])
             traj_obs_ind_side[step] = deepcopy(ob_team[:self.cfg.num_envs//2])
+            traj_obs_ind_side_critic[step] = deepcopy(ob_team_critic[:self.cfg.num_envs//2])
             traj_dones_team[step] = dones[self.cfg.num_envs//2:]
 
             with torch.no_grad():
                 action_right, logprob_right, val_right = self.get_actions(ob_right[:self.cfg.num_envs//2], self.actor, self.critic, self.value_rms)
                 action_left, logprob_left, val_left = self.get_actions(ob_left[:self.cfg.num_envs//2], self.actor_left, self.critic_left, self.value_rms_left)
-                action_team, logprob_team, val_team = self.get_actions(ob_team[self.cfg.num_envs//2:], self.actor_team, self.critic_team, self.value_rms_team)
-                action_ind = self.symmetry_manager.get_execute_action(action_right, action_left, cur_symmetry_tracker[:self.cfg.num_envs//2])
+                action_team, logprob_team, _ = self.get_actions(ob_team[self.cfg.num_envs//2:], self.actor_team)
+                val_team = self.get_values(ob_team_critic[self.cfg.num_envs//2:], self.critic_team, self.value_rms_team)
+                action_ind = self.symmetry_manager.get_execute_action(action_right, action_left, cur_symmetry_tracker[:self.cfg.num_envs//2] if cur_symmetry_tracker is not None else None)
                 
                 # get logprob for another side
                 logprob_ind_side = self.actor_team.logprob(ob_team[:self.cfg.num_envs//2], action_ind)
-                val_ind_side = self.get_values(ob_team[:self.cfg.num_envs//2], self.critic_team, self.value_rms_team)
+                val_ind_side = self.get_values(ob_team_critic[:self.cfg.num_envs//2], self.critic_team, self.value_rms_team)
 
             action = torch.cat([action_ind, action_team], dim=0)
             next_ob, reward, done, info = env.step(action)
@@ -213,17 +222,18 @@ class AgentEQSD2(ActorCriticBase):
         self.obs = ob
         self.dones = dones
         
-        ob_right, ob_left, ob_team = self.symmetry_manager.get_multi_agent_obs(ob, env.unwrapped.symmetry_tracker)
+        ob_right, ob_left, ob_team, ob_team_critic = self.symmetry_manager.get_multi_agent_obs(ob, env.unwrapped.symmetry_tracker)
         data = self.compute_adv((traj_obs, traj_actions, traj_logprobs, traj_rewards,
                                  traj_dones, traj_values, ob_right[:self.cfg.num_envs//2], dones[:self.cfg.num_envs//2]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, :self.cfg.num_envs//2], critic=self.critic, value_rms=self.value_rms)
         data_left = self.compute_adv((traj_obs_left, traj_actions_left, traj_logprobs_left, traj_rewards_left,
                                  traj_dones, traj_values_left, ob_left[:self.cfg.num_envs//2], dones[:self.cfg.num_envs//2]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, :self.cfg.num_envs//2], critic=self.critic_left, value_rms=self.value_rms_left)
         data_team = self.compute_adv((traj_obs_team, traj_actions_team, traj_logprobs_team, traj_rewards_team,
-                                 traj_dones_team, traj_values_team, ob_team[self.cfg.num_envs//2:], dones[self.cfg.num_envs//2:]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, self.cfg.num_envs//2:], critic=self.critic_team, value_rms=self.value_rms_team)
-
+                                 traj_dones_team, traj_values_team, ob_team_critic[self.cfg.num_envs//2:], dones[self.cfg.num_envs//2:]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, self.cfg.num_envs//2:], critic=self.critic_team, value_rms=self.value_rms_team)
+        data_obs_team_critic = traj_obs_team_critic.reshape(-1, *obs_dim_team_critic)
         data_ind_side = self.compute_adv((traj_obs_ind_side, traj_actions_ind_side, traj_logprobs_ind_side, traj_rewards_ind_side,
-                                 traj_dones_team, traj_values_ind_side, ob_team[:self.cfg.num_envs//2], dones[:self.cfg.num_envs//2]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, :self.cfg.num_envs//2], critic=self.critic_team, value_rms=self.value_rms_team)
-        return [data, data_left, data_team, data_ind_side], timesteps * self.cfg.num_envs
+                                 traj_dones_team, traj_values_ind_side, ob_team_critic[:self.cfg.num_envs//2], dones[:self.cfg.num_envs//2]), gae=self.cfg.algo.use_gae, timeout=self.timeout_info[:, :self.cfg.num_envs//2], critic=self.critic_team, value_rms=self.value_rms_team)
+        data_obs_ind_side_critic = traj_obs_ind_side_critic.reshape(-1, *obs_dim_team_critic)
+        return [data, data_left, data_team, data_ind_side, data_obs_team_critic, data_obs_ind_side_critic], timesteps * self.cfg.num_envs
 
     def compute_adv(self, buffer, gae=True, timeout=None, critic=None, value_rms=None):
         with torch.no_grad():
@@ -363,6 +373,8 @@ class AgentEQSD2(ActorCriticBase):
         b_obs_team, b_actions_team, b_logprobs_team, b_advantages_team, b_returns_team, b_values_team = data[2]
 
         b_obs_ind_side, b_actions_ind_side, b_logprobs_ind_side, b_advantages_ind_side, _, _ = data[3]
+        b_obs_team_critic = data[4]
+        b_obs_ind_side_critic = data[5]
 
         buffer_size = b_obs.size()[0]
         assert buffer_size >= self.cfg.algo.batch_size
@@ -400,7 +412,7 @@ class AgentEQSD2(ActorCriticBase):
                 actor_loss_team += self.kl_scheduler.val() * team_kl_loss
                 critic_loss = self.compute_critic_loss(self.critic, obs, b_returns[mb_inds], b_values[mb_inds])
                 critic_loss_left = self.compute_critic_loss(self.critic_left, obs_left, b_returns_left[mb_inds], b_values_left[mb_inds])
-                critic_loss_team = self.compute_critic_loss(self.critic_team, obs_team, b_returns_team[mb_inds], b_values_team[mb_inds])
+                critic_loss_team = self.compute_critic_loss(self.critic_team, b_obs_team_critic[mb_inds], b_returns_team[mb_inds], b_values_team[mb_inds])
 
                 actor_loss = actor_loss - self.cfg.algo.lambda_entropy * entropy.mean()
                 actor_loss_left = actor_loss_left - self.cfg.algo.lambda_entropy * entropy_left.mean()
@@ -410,7 +422,7 @@ class AgentEQSD2(ActorCriticBase):
                 self.optimizer_update(self.actor_optimizer_left, actor_loss_left)
                 self.optimizer_update(self.critic_optimizer_left, critic_loss_left)
                 self.optimizer_update(self.actor_optimizer_team, actor_loss_team)
-                # self.optimizer_update(self.critic_optimizer_team, critic_loss_team)
+                self.optimizer_update(self.critic_optimizer_team, critic_loss_team)
                 critic_loss_list.append(critic_loss.item())
                 actor_loss_list.append(actor_loss.item())
                 critic_loss_list_left.append(critic_loss_left.item())
