@@ -11,6 +11,7 @@ from pql.utils.common import load_class_from_path
 from pql.utils.common import parse_multi_rew
 from pql.models import model_name_to_path
 from bidex.utils.symmetry import load_symmetric_system, SymmetryManager, slice_tensor
+from pql.models.diffusion import EquivariantDiffusionPolicy
 
 @dataclass
 class AgentEQSD(ActorCriticBase):
@@ -26,7 +27,10 @@ class AgentEQSD(ActorCriticBase):
         self.G = load_symmetric_system(cfg=self.cfg.task.symmetry)
         self.actor = act_class(self.G, self.cfg.task.symmetry.EQSD.actor_input_fields[0], self.cfg.task.symmetry.EQSD.actor_output_fields[0], self.obs_dim[0], self.action_dim).to(self.cfg.device)
         self.actor_left = act_class(self.G, self.cfg.task.symmetry.EQSD.actor_input_fields[1], self.cfg.task.symmetry.EQSD.actor_output_fields[1], self.obs_dim[1], self.action_dim).to(self.cfg.device)
-        self.actor_team = act_class(self.G, self.cfg.task.symmetry.EQSD.actor_input_fields[2], self.cfg.task.symmetry.EQSD.actor_output_fields[2], self.obs_dim[2], self.action_dim*2).to(self.cfg.device)
+        if self.cfg.algo.use_diffusion:
+            self.actor_team = EquivariantDiffusionPolicy(self.G, self.cfg.task.symmetry.EQSD.actor_input_fields[2], self.cfg.task.symmetry.EQSD.actor_output_fields[2], self.obs_dim[2], self.action_dim*2, self.cfg.algo.diffusion_iter).to(self.cfg.device)
+        else:
+            self.actor_team = act_class(self.G, self.cfg.task.symmetry.EQSD.actor_input_fields[2], self.cfg.task.symmetry.EQSD.actor_output_fields[2], self.obs_dim[2], self.action_dim*2).to(self.cfg.device)
         
         self.critic = cri_class(self.G, self.cfg.task.symmetry.EQSD.critic_input_fields[0], self.cfg.task.symmetry.EQSD.critic_output_fields[0], self.obs_dim[0], 1).to(self.cfg.device)
         self.critic_left = cri_class(self.G, self.cfg.task.symmetry.EQSD.critic_input_fields[1], self.cfg.task.symmetry.EQSD.critic_output_fields[1], self.obs_dim[1], 1).to(self.cfg.device)
@@ -238,8 +242,11 @@ class AgentEQSD(ActorCriticBase):
                 actor_loss_left = torch.max(actor_loss1_left, actor_loss2_left).mean()
                 
                 # team policy imitation loss
-                _, action_dist_combine, newlogprob_combine, entropy_combine = self.actor_team.logprob_entropy(obs_combine, b_actions_combine[mb_inds])
-                imitation_loss = -newlogprob_combine.mean()
+                if self.cfg.algo.use_diffusion:
+                    imitation_loss = self.actor_team.get_loss(obs_combine, b_actions_combine[mb_inds])
+                else:   
+                    _, action_dist_combine, newlogprob_combine, entropy_combine = self.actor_team.logprob_entropy(obs_combine, b_actions_combine[mb_inds])
+                    imitation_loss = -newlogprob_combine.mean()
 
                 newvalue = self.critic(obs)
                 newvalue = newvalue.view(-1)

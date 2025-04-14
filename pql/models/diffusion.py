@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import escnn
 from escnn.nn import FieldType
-from pql.models.emlp import EMLP
+from pql.models.emlp import EMLP, EMLPNew
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
 
@@ -33,7 +33,6 @@ class EquivariantDiffusionNet(nn.Module):
         in_dim, 
         out_dim,
         dim=256,
-        num_blocks=3,
         act_fn=nn.Mish()
     ):
         super().__init__()
@@ -48,17 +47,16 @@ class EquivariantDiffusionNet(nn.Module):
 
         # generate the field types
         gspace = escnn.gspaces.no_base_space(G)
-        in_field = [G.representations["irrep_0"] for _ in range(dim)] + [G.representations[rep] for rep in input_fields] + [G.representations["irrep_0"] for _ in range(out_dim)]
+        in_field = [G.representations["irrep_0"] for _ in range(dim)] + [G.representations[rep] for rep in input_fields] + [G.representations[rep] for rep in output_fields]
         self.in_field_type = FieldType(gspace, in_field)
         assert self.in_field_type.size == dim + in_dim + out_dim, f"in_dim {in_dim} does not match the size of the input field type {self.in_field_type.size}"
         self.out_field_type = FieldType(gspace, [G.representations[rep] for rep in output_fields])
         assert self.out_field_type.size == out_dim, f"out_dim {out_dim} does not match the size of the output field type {self.out_field_type.size}"
         
-        self.mlp = EMLP(in_type=self.in_field_type,
+        self.mlp = EMLPNew(in_type=self.in_field_type,
                         out_type=self.out_field_type,
-                        num_layers=5,              # Input layer + 3 hidden layers + output/head layer
-                        num_hidden_units=256,      # Number of hidden units per layer
-                        #  activation=escnn.nn.ReLU,  # Activarions must be `EquivariantModules` instances
+                        hidden_layers=4,              # Input layer + 3 hidden layers + output/head layer
+                        hidden_units=[1024, 512, 512, 256],
                         bias=True             # Use bias in the linear layers
                         )
         
@@ -75,7 +73,7 @@ class EquivariantDiffusionNet(nn.Module):
         out = self.mlp(inp).tensor
 
         return out
-
+    
 
 class EquivariantDiffusionPolicy(nn.Module):
     def __init__(self, G, input_fields, output_fields, in_dim, out_dim, diffusion_iter, device="cuda"):
@@ -99,14 +97,13 @@ class EquivariantDiffusionPolicy(nn.Module):
         )
 
     def forward(self, x, sample=True):
-        return self.get_actions(x, sample=sample)
+        return self.get_actions(x, sample=True)
 
     def get_actions(self, state, sample=True):
         B = state.shape[0]
         # init action from Guassian noise
         noisy_action = torch.randn(
             (B, self.action_dim), device=self.device)
-        # noisy_action = torch.zeros((B, self.action_dim), device=self.device)
         # init scheduler
         self.noise_scheduler.set_timesteps(self.diffusion_iter)
 

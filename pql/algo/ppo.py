@@ -175,7 +175,7 @@ class AgentPPO(ActorCriticBase):
                 else:
                     critic_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
-                actor_loss = actor_loss - self.cfg.algo.lambda_entropy
+                actor_loss = actor_loss - self.cfg.algo.lambda_entropy * entropy.mean()
                 self.optimizer_update(self.actor_optimizer, actor_loss)
                 self.optimizer_update(self.critic_optimizer, critic_loss)
                 critic_loss_list.append(critic_loss.item())
