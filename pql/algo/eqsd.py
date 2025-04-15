@@ -202,6 +202,8 @@ class AgentEQSD(ActorCriticBase):
         b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_values = data[0]
         b_obs_left, b_actions_left, b_logprobs_left, b_advantages_left, b_returns_left, b_values_left = data[1]
         b_obs_combine, b_actions_combine = data[2]
+        if self.cfg.algo.use_diffusion:
+            b_actions_combine = b_actions_combine.clamp(-1.0, 1.0)
         buffer_size = b_obs.size()[0]
         assert buffer_size >= self.cfg.algo.batch_size
 
