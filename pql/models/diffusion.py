@@ -32,6 +32,7 @@ class EquivariantDiffusionNet(nn.Module):
         output_fields, 
         in_dim, 
         out_dim,
+        horizon=1,
         dim=256,
         act_fn=nn.Mish()
     ):
@@ -47,11 +48,11 @@ class EquivariantDiffusionNet(nn.Module):
 
         # generate the field types
         gspace = escnn.gspaces.no_base_space(G)
-        in_field = [G.representations["irrep_0"] for _ in range(dim)] + [G.representations[rep] for rep in input_fields] + [G.representations[rep] for rep in output_fields]
+        in_field = [G.representations["irrep_0"] for _ in range(dim)] + [G.representations[rep] for rep in input_fields] + [G.representations[rep] for rep in output_fields] * horizon
         self.in_field_type = FieldType(gspace, in_field)
-        assert self.in_field_type.size == dim + in_dim + out_dim, f"in_dim {in_dim} does not match the size of the input field type {self.in_field_type.size}"
-        self.out_field_type = FieldType(gspace, [G.representations[rep] for rep in output_fields])
-        assert self.out_field_type.size == out_dim, f"out_dim {out_dim} does not match the size of the output field type {self.out_field_type.size}"
+        assert self.in_field_type.size == dim + in_dim + out_dim * horizon, f"in_dim {dim + in_dim + out_dim * horizon} does not match the size of the input field type {self.in_field_type.size}"
+        self.out_field_type = FieldType(gspace, [G.representations[rep] for rep in output_fields] * horizon)
+        assert self.out_field_type.size == out_dim * horizon, f"out_dim {out_dim * horizon} does not match the size of the output field type {self.out_field_type.size}"
         
         self.mlp = EMLPNew(in_type=self.in_field_type,
                         out_type=self.out_field_type,
@@ -76,15 +77,16 @@ class EquivariantDiffusionNet(nn.Module):
     
 
 class EquivariantDiffusionPolicy(nn.Module):
-    def __init__(self, G, input_fields, output_fields, in_dim, out_dim, diffusion_iter, device="cuda"):
+    def __init__(self, G, input_fields, output_fields, in_dim, out_dim, diffusion_iter, horizon=1, device="cuda"):
         super().__init__()
         self.action_dim = out_dim
         self.diffusion_iter = diffusion_iter
+        self.horizon = horizon
         self.device = device
 
         # init network
         self.net = EquivariantDiffusionNet(
-            G, input_fields, output_fields, in_dim, out_dim,
+            G, input_fields, output_fields, in_dim, out_dim, horizon
         )
 
         # init noise scheduler
@@ -103,7 +105,7 @@ class EquivariantDiffusionPolicy(nn.Module):
         B = state.shape[0]
         # init action from Guassian noise
         noisy_action = torch.randn(
-            (B, self.action_dim), device=self.device)
+            (B, self.action_dim * self.horizon), device=self.device)
         # init scheduler
         self.noise_scheduler.set_timesteps(self.diffusion_iter)
 
@@ -130,7 +132,7 @@ class EquivariantDiffusionPolicy(nn.Module):
             if sample:
                 noisy_action = noisy_action.detach()
 
-        return noisy_action
+        return noisy_action[:, :self.action_dim]
         
     def get_loss(self, state, action, noise=None, timesteps=None):
         B = action.shape[0]
