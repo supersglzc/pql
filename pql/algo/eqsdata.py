@@ -126,13 +126,9 @@ class AgentEQSdata(ActorCriticBase):
             traj_dones[step] = dones
 
             action_right, logprob_right, val_right = self.get_actions(ob_right, self.actor, self.critic, self.value_rms)
-            val_right_transformed = self.get_values(ob_right_transformed, self.critic, self.value_rms)
-            action_right_transformed = transform_data(action_right, self.output_fields[0])
-            logprob_right_transformed = self.actor.logprob_entropy(ob_right_transformed, action_right_transformed)[2]
+            action_right_transformed, logprob_right_transformed, val_right_transformed = self.get_actions(ob_right_transformed, self.actor, self.critic, self.value_rms)
             action_left, logprob_left, val_left = self.get_actions(ob_left, self.actor_left, self.critic_left, self.value_rms_left)
-            val_left_transformed = self.get_values(ob_left_transformed, self.critic_left, self.value_rms_left)
-            action_left_transformed = transform_data(action_left, self.output_fields[1])
-            logprob_left_transformed = self.actor_left.logprob_entropy(ob_left_transformed, action_left_transformed)[2]
+            action_left_transformed, logprob_left_transformed, val_left_transformed = self.get_actions(ob_left_transformed, self.actor_left, self.critic_left, self.value_rms_left)
             action = self.symmetry_manager.get_execute_action(action_right, action_left, cur_symmetry_tracker)
             next_ob, reward, done, info = env.step(action)
 
@@ -245,18 +241,18 @@ class AgentEQSdata(ActorCriticBase):
         b_obs_left, b_actions_left, b_logprobs_left, b_advantages_left, b_returns_left, b_values_left = data[1]
         b_obs_transformed, b_actions_transformed, b_logprobs_transformed, b_advantages_transformed, b_returns_transformed, b_values_transformed = data[2]
         b_obs_left_transformed, b_actions_left_transformed, b_logprobs_left_transformed, b_advantages_left_transformed, b_returns_left_transformed, b_values_left_transformed = data[3]
-        # b_obs = torch.cat((b_obs, b_obs_transformed), dim=0)
-        # b_obs_left = torch.cat((b_obs_left, b_obs_left_transformed), dim=0)
-        # b_actions = torch.cat((b_actions, b_actions_transformed), dim=0)
-        # b_actions_left = torch.cat((b_actions_left, b_actions_left_transformed), dim=0)
-        # b_logprobs = torch.cat((b_logprobs, b_logprobs_transformed), dim=0)
-        # b_logprobs_left = torch.cat((b_logprobs_left, b_logprobs_left_transformed), dim=0)
-        # b_advantages = torch.cat((b_advantages, b_advantages_transformed), dim=0)
-        # b_advantages_left = torch.cat((b_advantages_left, b_advantages_left_transformed), dim=0)
-        # b_returns = torch.cat((b_returns, b_returns_transformed), dim=0)
-        # b_returns_left = torch.cat((b_returns_left, b_returns_left_transformed), dim=0)
-        # b_values = torch.cat((b_values, b_values_transformed), dim=0)
-        # b_values_left = torch.cat((b_values_left, b_values_left_transformed), dim=0)
+        b_obs = torch.cat((b_obs, b_obs_transformed), dim=0)
+        b_obs_left = torch.cat((b_obs_left, b_obs_left_transformed), dim=0)
+        b_actions = torch.cat((b_actions, b_actions_transformed), dim=0)
+        b_actions_left = torch.cat((b_actions_left, b_actions_left_transformed), dim=0)
+        b_logprobs = torch.cat((b_logprobs, b_logprobs_transformed), dim=0)
+        b_logprobs_left = torch.cat((b_logprobs_left, b_logprobs_left_transformed), dim=0)
+        b_advantages = torch.cat((b_advantages, b_advantages_transformed), dim=0)
+        b_advantages_left = torch.cat((b_advantages_left, b_advantages_left_transformed), dim=0)
+        b_returns = torch.cat((b_returns, b_returns_transformed), dim=0)
+        b_returns_left = torch.cat((b_returns_left, b_returns_left_transformed), dim=0)
+        b_values = torch.cat((b_values, b_values_transformed), dim=0)
+        b_values_left = torch.cat((b_values_left, b_values_left_transformed), dim=0)
         buffer_size = b_obs.size()[0]
         assert buffer_size >= self.cfg.algo.batch_size
 
