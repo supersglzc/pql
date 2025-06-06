@@ -20,6 +20,7 @@ class AgentPPOV(ActorCriticBase):
         act_class = load_class_from_path(self.cfg.algo.act_class,
                                          model_name_to_path[self.cfg.algo.act_class])
         self.actor = act_class(self.env.policy_space.shape[-1], self.action_dim).to(self.cfg.device)
+        self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
         if self.cfg.algo.value_norm:
             self.value_rms = RunningMeanStd(shape=(1), device=self.device)
 
@@ -40,7 +41,7 @@ class AgentPPOV(ActorCriticBase):
         policy_dim = env.policy_space.shape[-1]
         obs_dim = (self.obs_dim,) if isinstance(self.obs_dim, int) else self.obs_dim
         traj_obs = torch.zeros((timesteps, self.cfg.num_envs) + (*obs_dim,), device=self.device)
-        traj_obs_img = torch.zeros((timesteps, self.cfg.num_envs) + (*img_shape,), device='cpu', dtype=torch.uint8)
+        traj_obs_img = torch.zeros((timesteps, self.cfg.num_envs) + (*img_shape,), device=self.device, dtype=torch.uint8)
         traj_obs_policy = torch.zeros((timesteps, self.cfg.num_envs, policy_dim), device=self.device)
         traj_actions = torch.zeros((timesteps, self.cfg.num_envs) + (self.action_dim,), device=self.device)
         traj_logprobs = torch.zeros((timesteps, self.cfg.num_envs), device=self.device)

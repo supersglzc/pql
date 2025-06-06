@@ -61,8 +61,8 @@ class ResEncoder(nn.Module):
                 transforms.CenterCrop(224)
             ])
 
-        # for param in self.model.parameters():
-        #     param.requires_grad = False
+        for param in self.model.parameters():
+            param.requires_grad = False
 
         self.num_ftrs = self.model.fc.in_features
         self.model.fc = nn.Identity()
@@ -111,16 +111,14 @@ class ResEncoder(nn.Module):
     
 
 class DiagGaussianMLPVPolicy(nn.Module):
-    def __init__(self, obs_dim, act_dim, feature_dim=50, hidden_dim=1024,
+    def __init__(self, obs_dim, act_dim, feature_dim=1024, hidden_dim=512,
                  init_log_std=0.):
         super().__init__()
         self.encoder = ResEncoder()
-        self.img_trunk = nn.Sequential(nn.Linear(self.encoder.repr_dim, feature_dim),
+        self.trunk = nn.Sequential(nn.Linear(self.encoder.repr_dim, feature_dim),
                                    nn.LayerNorm(feature_dim), nn.Tanh())
-        self.state_trunk = nn.Sequential(nn.Linear(obs_dim, feature_dim),
-                                   nn.ReLU(inplace=True))
 
-        self.policy = nn.Sequential(nn.Linear(feature_dim * 2, hidden_dim),
+        self.policy = nn.Sequential(nn.Linear(feature_dim + obs_dim, hidden_dim),
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, hidden_dim),
                                     nn.ReLU(inplace=True),
@@ -134,8 +132,8 @@ class DiagGaussianMLPVPolicy(nn.Module):
 
     def get_actions(self, img, state, sample=True):
         x = self.encoder(img)
-        h = self.img_trunk(x)
-        h = torch.cat([h, self.state_trunk(state)], dim=1)
+        h = self.trunk(x)
+        h = torch.cat([h, state], dim=-1)
         mean = self.policy(h)
         log_std = self.logstd.expand_as(mean)
         std = torch.exp(log_std)
