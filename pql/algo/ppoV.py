@@ -7,7 +7,6 @@ from copy import deepcopy
 from pql.algo.ac_base import ActorCriticBase
 from pql.utils.torch_util import RunningMeanStd
 from pql.utils.common import handle_timeout, aggregate_traj_info
-from pql.models.visual import ResEncoder, RandomShiftsAug
 from pql.utils.common import load_class_from_path
 from pql.models import model_name_to_path
 
@@ -16,7 +15,6 @@ class AgentPPOV(ActorCriticBase):
     def __post_init__(self):
         super().__post_init__()
         self.timeout_info = None
-        self.aug = RandomShiftsAug(pad=4)
         act_class = load_class_from_path(self.cfg.algo.act_class,
                                          model_name_to_path[self.cfg.algo.act_class])
         self.actor = act_class(self.env.policy_space.shape[-1], self.action_dim).to(self.cfg.device)
@@ -37,7 +35,6 @@ class AgentPPOV(ActorCriticBase):
     @torch.no_grad()
     def explore_env(self, env, timesteps: int, random: bool = False) -> list:
         img_shape = list(env.vision_space.shape[1:])
-        img_shape[0] = 9
         policy_dim = env.policy_space.shape[-1]
         obs_dim = (self.obs_dim,) if isinstance(self.obs_dim, int) else self.obs_dim
         traj_obs = torch.zeros((timesteps, self.cfg.num_envs) + (*obs_dim,), device=self.device)
@@ -169,10 +166,9 @@ class AgentPPOV(ActorCriticBase):
                     obs = self.obs_rms.normalize(b_obs[mb_inds])
                 else:
                     obs = b_obs[mb_inds]
-                    # obs_img = self.aug(b_obs_img[mb_inds].float()).to(self.device)
                     obs_img = b_obs_img[mb_inds].float().to(self.device)
                     obs_policy = b_obs_policy[mb_inds]
-                _, action_dist, newlogprob, entropy = self.actor.logprob_entropy(obs_img, obs_policy, b_actions[mb_inds])
+                _, action_dist, newlogprob, entropy = self.actor.logprob_entropy(obs_img, obs_policy, b_actions[mb_inds], aug=False)
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
                 mb_advantages = b_advantages[mb_inds]

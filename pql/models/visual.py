@@ -79,8 +79,12 @@ class ResEncoder(nn.Module):
         # nn.init.orthogonal_(self.fc.weight.data)
         # self.fc.bias.data.fill_(0.0)
 
+        self.aug = RandomShiftsAug(pad=4)
+
     @torch.no_grad()
-    def forward_conv(self, obs, flatten=True):
+    def forward_conv(self, obs, flatten=True, aug=False):
+        if aug:
+            obs = self.aug(obs)
         obs = obs / 255.0 - 0.5
         time_step = obs.shape[1] // self.image_channel
         obs = obs.reshape(obs.shape[0], time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
@@ -102,8 +106,8 @@ class ResEncoder(nn.Module):
         return conv
 
 
-    def forward(self, obs):
-        conv = self.forward_conv(obs)
+    def forward(self, obs, aug=False):
+        conv = self.forward_conv(obs, aug=aug)
         out = self.fc(conv)
         out = self.ln(out)
         # obs = self.model(self.transform(obs.to(torch.float32)) / 255.0 - 0.5)
@@ -112,10 +116,10 @@ class ResEncoder(nn.Module):
 
 class DiagGaussianMLPVPolicy(nn.Module):
     def __init__(self, obs_dim, act_dim, feature_dim=1024, hidden_dim=512,
-                 init_log_std=0.):
+                 init_log_std=0., num_cams=2):
         super().__init__()
         self.encoder = ResEncoder()
-        self.trunk = nn.Sequential(nn.Linear(self.encoder.repr_dim, feature_dim),
+        self.trunk = nn.Sequential(nn.Linear(self.encoder.repr_dim * num_cams, feature_dim),
                                    nn.LayerNorm(feature_dim), nn.Tanh())
 
         self.policy = nn.Sequential(nn.Linear(feature_dim + obs_dim, hidden_dim),
@@ -127,11 +131,13 @@ class DiagGaussianMLPVPolicy(nn.Module):
         # self.apply(weight_init)
         self.logstd = nn.Parameter(torch.full((act_dim,), init_log_std))
 
-    def forward(self, img, state, sample=True):
-        return self.get_actions(img, state, sample=sample)[0]
+    def forward(self, img, state, sample=True, aug=False):
+        return self.get_actions(img, state, sample=sample, aug=aug)[0]
 
-    def get_actions(self, img, state, sample=True):
-        x = self.encoder(img)
+    def get_actions(self, img, state, sample=True, aug=False):
+        x = self.encoder(img[:, 0], aug=aug)
+        for i in range(1, img.shape[1]):
+            x = torch.cat([x, self.encoder(img[:, i], aug=aug)], dim=-1)
         h = self.trunk(x)
         h = torch.cat([h, state], dim=-1)
         mean = self.policy(h)
@@ -144,14 +150,14 @@ class DiagGaussianMLPVPolicy(nn.Module):
             actions = mean
         return actions, action_dist
 
-    def get_actions_logprob_entropy(self, img, state, sample=True):
-        actions, action_dist = self.get_actions(img, state, sample=sample)
+    def get_actions_logprob_entropy(self, img, state, sample=True, aug=False):
+        actions, action_dist = self.get_actions(img, state, sample=sample, aug=aug)
         log_prob = action_dist.log_prob(actions)
         entropy = action_dist.entropy()
         return actions, action_dist, log_prob, entropy
 
-    def logprob_entropy(self, img, state, actions):
-        _, action_dist = self.get_actions(img, state)
+    def logprob_entropy(self, img, state, actions, aug=False):
+        _, action_dist = self.get_actions(img, state, aug=aug)
         log_prob = action_dist.log_prob(actions)
         entropy = action_dist.entropy()
         return actions, action_dist, log_prob, entropy
