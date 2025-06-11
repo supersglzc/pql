@@ -9,15 +9,19 @@ from pql.utils.torch_util import RunningMeanStd
 from pql.utils.common import handle_timeout, aggregate_traj_info
 from pql.utils.common import load_class_from_path
 from pql.models import model_name_to_path
+from pql.models.visual import ResEncoder
+from torch.nn.utils import clip_grad_norm_
 
 @dataclass
 class AgentPPOV(ActorCriticBase):
     def __post_init__(self):
         super().__post_init__()
         self.timeout_info = None
+        self.encoder = ResEncoder(num_cams=self.cfg.task.cam.num_cams).to(self.cfg.device)
+        self.encoder_optimizer = torch.optim.AdamW(self.encoder.parameters(), self.cfg.algo.actor_lr)
         act_class = load_class_from_path(self.cfg.algo.act_class,
                                          model_name_to_path[self.cfg.algo.act_class])
-        self.actor = act_class(self.env.policy_space.shape[-1], self.action_dim).to(self.cfg.device)
+        self.actor = act_class(self.env.policy_space.shape[-1], self.action_dim, repr_dim=self.encoder.repr_dim, num_cams=self.cfg.task.cam.num_cams).to(self.cfg.device)
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
         if self.cfg.algo.value_norm:
             self.value_rms = RunningMeanStd(shape=(1), device=self.device)
@@ -25,7 +29,8 @@ class AgentPPOV(ActorCriticBase):
     def get_actions(self, obs):
         if self.cfg.algo.obs_norm:
             obs = self.obs_rms.normalize(obs)
-        actions, action_dist, logprobs, entropy = self.actor.get_actions_logprob_entropy(obs['vision'], obs['policy'])
+        obs_img = self.encoder(obs['vision'])
+        actions, action_dist, logprobs, entropy = self.actor.get_actions_logprob_entropy(obs_img, obs['policy'], pc=obs['point_cloud'])
         value = self.critic(obs['critic'])
         if self.cfg.algo.value_norm:
             self.value_rms.update(value)
@@ -38,7 +43,8 @@ class AgentPPOV(ActorCriticBase):
         policy_dim = env.policy_space.shape[-1]
         obs_dim = (self.obs_dim,) if isinstance(self.obs_dim, int) else self.obs_dim
         traj_obs = torch.zeros((timesteps, self.cfg.num_envs) + (*obs_dim,), device=self.device)
-        traj_obs_img = torch.zeros((timesteps, self.cfg.num_envs) + (*img_shape,), device=self.device, dtype=torch.uint8)
+        traj_obs_img = torch.zeros((timesteps, self.cfg.num_envs) + (*img_shape,), device='cuda', dtype=torch.uint8)
+        traj_obs_pc = torch.zeros((timesteps, self.cfg.num_envs, 1024, 3), device='cuda')
         traj_obs_policy = torch.zeros((timesteps, self.cfg.num_envs, policy_dim), device=self.device)
         traj_actions = torch.zeros((timesteps, self.cfg.num_envs) + (self.action_dim,), device=self.device)
         traj_logprobs = torch.zeros((timesteps, self.cfg.num_envs), device=self.device)
@@ -54,6 +60,7 @@ class AgentPPOV(ActorCriticBase):
                 self.obs_rms.update(ob)
             traj_obs[step] = deepcopy(ob['critic'])
             traj_obs_img[step] = deepcopy(ob['vision']).to('cpu')
+            traj_obs_pc[step] = deepcopy(ob['point_cloud']).to('cpu')
             traj_obs_policy[step] = deepcopy(ob['policy'])
             traj_dones[step] = dones
 
@@ -79,14 +86,15 @@ class AgentPPOV(ActorCriticBase):
         self.dones = dones
         
         data = self.compute_adv((traj_obs, traj_actions, traj_logprobs, traj_rewards,
-                                 traj_dones, traj_values, ob['critic'], dones), gae=self.cfg.algo.use_gae, timeout=self.timeout_info, obs_img=traj_obs_img, obs_policy=traj_obs_policy)
+                                 traj_dones, traj_values, ob['critic'], dones), gae=self.cfg.algo.use_gae, timeout=self.timeout_info, obs_img=traj_obs_img, obs_policy=traj_obs_policy, obs_pc=traj_obs_pc)
 
         return data, timesteps * self.cfg.num_envs
 
-    def compute_adv(self, buffer, gae=True, timeout=None, obs_img=None, obs_policy=None):
+    def compute_adv(self, buffer, gae=True, timeout=None, obs_img=None, obs_policy=None, obs_pc=None):
         with torch.no_grad():
             obs, actions, logprobs, rewards, dones, values, next_obs, next_done = buffer
             img_shape = obs_img.shape[2:]
+            pc_shape = obs_pc.shape[2:]
             policy_dim = obs_policy.shape[-1]
             timesteps = obs.shape[0]
             if self.cfg.algo.obs_norm:
@@ -131,6 +139,7 @@ class AgentPPOV(ActorCriticBase):
         obs_dim = (self.obs_dim,) if isinstance(self.obs_dim, int) else self.obs_dim
         b_obs = obs.reshape((-1,) + (*obs_dim,))
         b_obs_img = obs_img.reshape((-1,) + (*img_shape,))
+        b_obs_pc = obs_pc.reshape((-1,) + (*pc_shape,))
         b_obs_policy = obs_policy.reshape((-1, policy_dim))
         b_actions = actions.reshape((-1,) + (self.action_dim,))
         b_logprobs = logprobs.reshape(-1)
@@ -146,10 +155,10 @@ class AgentPPOV(ActorCriticBase):
             b_returns = returns.reshape(-1)
             b_values = values.reshape(-1)
 
-        return (b_obs, b_obs_img, b_obs_policy, b_actions, b_logprobs, b_advantages, b_returns, b_values)
+        return (b_obs, b_obs_img, b_obs_pc, b_obs_policy, b_actions, b_logprobs, b_advantages, b_returns, b_values)
 
     def update_net(self, data):
-        b_obs, b_obs_img, b_obs_policy, b_actions, b_logprobs, b_advantages, b_returns, b_values = data
+        b_obs, b_obs_img, b_obs_pc, b_obs_policy, b_actions, b_logprobs, b_advantages, b_returns, b_values = data
         buffer_size = b_obs.size()[0]
         assert buffer_size >= self.cfg.algo.batch_size
 
@@ -162,13 +171,12 @@ class AgentPPOV(ActorCriticBase):
                 end = start + self.cfg.algo.batch_size
                 mb_inds = b_inds[start:end]
 
-                if self.cfg.algo.obs_norm:
-                    obs = self.obs_rms.normalize(b_obs[mb_inds])
-                else:
-                    obs = b_obs[mb_inds]
-                    obs_img = b_obs_img[mb_inds].float().to(self.device)
-                    obs_policy = b_obs_policy[mb_inds]
-                _, action_dist, newlogprob, entropy = self.actor.logprob_entropy(obs_img, obs_policy, b_actions[mb_inds], aug=False)
+                obs = b_obs[mb_inds]
+                obs_img = b_obs_img[mb_inds].float().to(self.device)
+                obs_pc = b_obs_pc[mb_inds].to(self.device)
+
+                obs_img = self.encoder(obs_img)
+                _, action_dist, newlogprob, entropy = self.actor.logprob_entropy(obs_img, b_obs_policy[mb_inds], b_actions[mb_inds], pc=obs_pc, aug=False)
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
                 mb_advantages = b_advantages[mb_inds]
@@ -193,7 +201,20 @@ class AgentPPOV(ActorCriticBase):
                     critic_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 actor_loss = actor_loss - self.cfg.algo.lambda_entropy * entropy.mean()
-                self.optimizer_update(self.actor_optimizer, actor_loss)
+                # self.optimizer_update(self.actor_optimizer, actor_loss)
+                self.encoder_optimizer.zero_grad(set_to_none=True)
+                self.actor_optimizer.zero_grad(set_to_none=True)
+                actor_loss.backward()
+                if self.cfg.algo.max_grad_norm is not None:
+                    grad_norm = clip_grad_norm_(parameters=self.actor_optimizer.param_groups[0]["params"],
+                                                max_norm=self.cfg.algo.max_grad_norm)
+                    grad_norm_encoder = clip_grad_norm_(parameters=self.encoder_optimizer.param_groups[0]["params"],
+                                                max_norm=self.cfg.algo.max_grad_norm)
+                else:
+                    grad_norm = None
+                    grad_norm_encoder = None
+                self.actor_optimizer.step()
+                self.encoder_optimizer.step()
                 self.optimizer_update(self.critic_optimizer, critic_loss)
                 critic_loss_list.append(critic_loss.item())
                 actor_loss_list.append(actor_loss.item())

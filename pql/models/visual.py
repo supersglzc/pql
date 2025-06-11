@@ -52,9 +52,82 @@ def weight_init(m):
         if hasattr(m.bias, 'data'):
             m.bias.data.fill_(0.0)
 
+class PointNetEncoderXYZ(nn.Module):
+    """Encoder for Pointcloud
+    """
+
+    def __init__(self,
+                 in_channels: int=3,
+                 out_channels: int=1024,
+                 use_layernorm: bool=False,
+                 final_norm: str='none',
+                 use_projection: bool=True,
+                 **kwargs
+                 ):
+        """_summary_
+
+        Args:
+            in_channels (int): feature size of input (3 or 6)
+            input_transform (bool, optional): whether to use transformation for coordinates. Defaults to True.
+            feature_transform (bool, optional): whether to use transformation for features. Defaults to True.
+            is_seg (bool, optional): for segmentation or classification. Defaults to False.
+        """
+        super().__init__()
+        block_channel = [64, 128, 256]
+        # cprint("[PointNetEncoderXYZ] use_layernorm: {}".format(use_layernorm), 'cyan')
+        # cprint("[PointNetEncoderXYZ] use_final_norm: {}".format(final_norm), 'cyan')
+        
+        assert in_channels == 3, print(f"PointNetEncoderXYZ only supports 3 channels, but got {in_channels}")
+       
+        self.mlp = nn.Sequential(
+            nn.Linear(in_channels, block_channel[0]),
+            nn.LayerNorm(block_channel[0]) if use_layernorm else nn.Identity(),
+            nn.ReLU(),
+            nn.Linear(block_channel[0], block_channel[1]),
+            nn.LayerNorm(block_channel[1]) if use_layernorm else nn.Identity(),
+            nn.ReLU(),
+            nn.Linear(block_channel[1], block_channel[2]),
+            nn.LayerNorm(block_channel[2]) if use_layernorm else nn.Identity(),
+            nn.ReLU(),
+        )
+        
+        
+        if final_norm == 'layernorm':
+            self.final_projection = nn.Sequential(
+                nn.Linear(block_channel[-1], out_channels),
+                nn.LayerNorm(out_channels)
+            )
+        elif final_norm == 'none':
+            self.final_projection = nn.Linear(block_channel[-1], out_channels)
+        else:
+            raise NotImplementedError(f"final_norm: {final_norm}")
+
+        self.use_projection = use_projection
+        if not use_projection:
+            self.final_projection = nn.Identity()
+            # cprint("[PointNetEncoderXYZ] not use projection", "yellow")
+            
+        VIS_WITH_GRAD_CAM = False
+        if VIS_WITH_GRAD_CAM:
+            self.gradient = None
+            self.feature = None
+            self.input_pointcloud = None
+            self.mlp[0].register_forward_hook(self.save_input)
+            self.mlp[6].register_forward_hook(self.save_feature)
+            self.mlp[6].register_backward_hook(self.save_gradient)
+         
+         
+    def forward(self, x):
+        x = self.mlp(x)
+        x = torch.max(x, 1)[0]
+        x = self.final_projection(x)
+        return x
+    
+
 class ResEncoder(nn.Module):
-    def __init__(self):
+    def __init__(self, num_cams=2):
         super(ResEncoder, self).__init__()
+        self.num_cams = num_cams
         self.model = resnet18(pretrained=True)
         self.transform = transforms.Compose([
                 transforms.Resize(256),
@@ -68,7 +141,7 @@ class ResEncoder(nn.Module):
         self.model.fc = nn.Identity()
         self.repr_dim = 1024
         self.image_channel = 3
-        x = torch.randn([32] + [9, 128, 128])
+        x = torch.randn([32] + [3 * self.image_channel, 128, 128])
         with torch.no_grad():
             out_shape = self.forward_conv(x).shape
         self.out_dim = out_shape[1]
@@ -105,41 +178,54 @@ class ResEncoder(nn.Module):
 
         return conv
 
-
-    def forward(self, obs, aug=False):
+    def forward_single(self, obs, aug=False):
         conv = self.forward_conv(obs, aug=aug)
         out = self.fc(conv)
         out = self.ln(out)
-        # obs = self.model(self.transform(obs.to(torch.float32)) / 255.0 - 0.5)
         return out
+    
+    def forward(self, obs, aug=False):
+        assert obs.shape[1] == self.num_cams
+        x = self.forward_single(obs[:, 0], aug=aug)
+        for i in range(1, obs.shape[1]):
+            x = torch.cat([x, self.forward_single(obs[:, i], aug=aug)], dim=-1)
+        return x
     
 
 class DiagGaussianMLPVPolicy(nn.Module):
-    def __init__(self, obs_dim, act_dim, feature_dim=1024, hidden_dim=512,
+    def __init__(self, obs_dim, act_dim, repr_dim=1024, feature_dim=1024, hidden_dim=512,
                  init_log_std=0., num_cams=2):
         super().__init__()
-        self.encoder = ResEncoder()
-        self.trunk = nn.Sequential(nn.Linear(self.encoder.repr_dim * num_cams, feature_dim),
+        # self.encoder = ResEncoder()
+        self.point_encoder = PointNetEncoderXYZ(in_channels=3,
+                                                out_channels=64,
+                                                use_layernorm=True,
+                                                final_norm='layernorm',
+                                                use_projection=True)
+        self.trunk = nn.Sequential(nn.Linear(repr_dim * num_cams, feature_dim),
                                    nn.LayerNorm(feature_dim), nn.Tanh())
 
-        self.policy = nn.Sequential(nn.Linear(feature_dim + obs_dim, hidden_dim),
+        self.policy = nn.Sequential(nn.Linear(feature_dim + obs_dim + 64, hidden_dim),
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, hidden_dim),
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, act_dim))
 
-        # self.apply(weight_init)
+        self.apply(weight_init)
         self.logstd = nn.Parameter(torch.full((act_dim,), init_log_std))
 
-    def forward(self, img, state, sample=True, aug=False):
-        return self.get_actions(img, state, sample=sample, aug=aug)[0]
+    def forward(self, img, state, pc=None, sample=True, aug=False):
+        return self.get_actions(img, state, pc=pc, sample=sample, aug=aug)[0]
 
-    def get_actions(self, img, state, sample=True, aug=False):
-        x = self.encoder(img[:, 0], aug=aug)
-        for i in range(1, img.shape[1]):
-            x = torch.cat([x, self.encoder(img[:, i], aug=aug)], dim=-1)
+    def get_actions(self, x, state, pc=None, sample=True, aug=False):
+        # x = self.encoder(img[:, 0], aug=aug)
+        # for i in range(1, img.shape[1]):
+        #     x = torch.cat([x, self.encoder(img[:, i], aug=aug)], dim=-1)
         h = self.trunk(x)
         h = torch.cat([h, state], dim=-1)
+        if pc is not None:
+            pc = self.point_encoder(pc)
+            h = torch.cat([h, pc], dim=-1)
         mean = self.policy(h)
         log_std = self.logstd.expand_as(mean)
         std = torch.exp(log_std)
@@ -150,14 +236,14 @@ class DiagGaussianMLPVPolicy(nn.Module):
             actions = mean
         return actions, action_dist
 
-    def get_actions_logprob_entropy(self, img, state, sample=True, aug=False):
-        actions, action_dist = self.get_actions(img, state, sample=sample, aug=aug)
+    def get_actions_logprob_entropy(self, img, state, pc=None, sample=True, aug=False):
+        actions, action_dist = self.get_actions(img, state, pc=pc, sample=sample, aug=aug)
         log_prob = action_dist.log_prob(actions)
         entropy = action_dist.entropy()
         return actions, action_dist, log_prob, entropy
 
-    def logprob_entropy(self, img, state, actions, aug=False):
-        _, action_dist = self.get_actions(img, state, aug=aug)
+    def logprob_entropy(self, img, state, actions, pc=None, aug=False):
+        _, action_dist = self.get_actions(img, state, pc=pc, aug=aug)
         log_prob = action_dist.log_prob(actions)
         entropy = action_dist.entropy()
         return actions, action_dist, log_prob, entropy
