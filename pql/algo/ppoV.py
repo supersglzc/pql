@@ -44,7 +44,7 @@ class AgentPPOV(ActorCriticBase):
         obs_dim = (self.obs_dim,) if isinstance(self.obs_dim, int) else self.obs_dim
         traj_obs = torch.zeros((timesteps, self.cfg.num_envs) + (*obs_dim,), device=self.device)
         traj_obs_img = torch.zeros((timesteps, self.cfg.num_envs) + (*img_shape,), device='cuda', dtype=torch.uint8)
-        traj_obs_pc = torch.zeros((timesteps, self.cfg.num_envs, 2048, 3), device='cuda')
+        traj_obs_pc = torch.zeros((timesteps, self.cfg.num_envs, self.cfg.task.cam.pc.max_points, 3), device='cuda')
         traj_obs_policy = torch.zeros((timesteps, self.cfg.num_envs, policy_dim), device=self.device)
         traj_actions = torch.zeros((timesteps, self.cfg.num_envs) + (self.action_dim,), device=self.device)
         traj_logprobs = torch.zeros((timesteps, self.cfg.num_envs), device=self.device)
