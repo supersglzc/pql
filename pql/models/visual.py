@@ -196,16 +196,15 @@ class DiagGaussianMLPVPolicy(nn.Module):
     def __init__(self, obs_dim, act_dim, repr_dim=1024, feature_dim=1024, hidden_dim=512,
                  init_log_std=0., num_cams=2):
         super().__init__()
-        # self.encoder = ResEncoder()
         self.point_encoder = PointNetEncoderXYZ(in_channels=3,
                                                 out_channels=64,
                                                 use_layernorm=True,
                                                 final_norm='layernorm',
                                                 use_projection=True)
-        self.trunk = nn.Sequential(nn.Linear(repr_dim * num_cams, feature_dim),
-                                   nn.LayerNorm(feature_dim), nn.Tanh())
+        # self.trunk = nn.Sequential(nn.Linear(repr_dim * num_cams, feature_dim),
+        #                            nn.LayerNorm(feature_dim), nn.Tanh())
 
-        self.policy = nn.Sequential(nn.Linear(feature_dim + obs_dim + 64, hidden_dim),
+        self.policy = nn.Sequential(nn.Linear(obs_dim + 64, hidden_dim),  # feature_dim + 
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, hidden_dim),
                                     nn.ReLU(inplace=True),
@@ -218,11 +217,9 @@ class DiagGaussianMLPVPolicy(nn.Module):
         return self.get_actions(img, state, pc=pc, sample=sample, aug=aug)[0]
 
     def get_actions(self, x, state, pc=None, sample=True, aug=False):
-        # x = self.encoder(img[:, 0], aug=aug)
-        # for i in range(1, img.shape[1]):
-        #     x = torch.cat([x, self.encoder(img[:, i], aug=aug)], dim=-1)
-        h = self.trunk(x)
-        h = torch.cat([h, state], dim=-1)
+        # h = self.trunk(x)
+        # h = torch.cat([h, state], dim=-1)
+        h = state
         if pc is not None:
             pc = self.point_encoder(pc)
             h = torch.cat([h, pc], dim=-1)
