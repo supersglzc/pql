@@ -231,12 +231,12 @@ class DiagGaussianMLPVPolicy(nn.Module):
     def __init__(self, obs_dim, act_dim, repr_dim=1024, feature_dim=1024, hidden_dim=512,
                  init_log_std=0., num_cams=2):
         super().__init__()
-        # self.point_encoder = PointNetEncoderXYZ(in_channels=3,
-        #                                         out_channels=64,
-        #                                         use_layernorm=True,
-        #                                         final_norm='layernorm',
-        #                                         use_projection=True)
-        self.point_encoder = MultiStagePointNetEncoder(out_channels=128)
+        self.point_encoder = PointNetEncoderXYZ(in_channels=3,
+                                                out_channels=64,
+                                                use_layernorm=True,
+                                                final_norm='layernorm',
+                                                use_projection=True)
+        # self.point_encoder = MultiStagePointNetEncoder(out_channels=128)
         # self.trunk = nn.Sequential(nn.Linear(repr_dim * num_cams, feature_dim),
         #                            nn.LayerNorm(feature_dim), nn.Tanh())
 
