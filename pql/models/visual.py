@@ -91,7 +91,7 @@ class PointNetEncoderXYZ(nn.Module):
             nn.ReLU(),
         )
         
-        
+        self.out_channels = out_channels
         if final_norm == 'layernorm':
             self.final_projection = nn.Sequential(
                 nn.Linear(block_channel[-1], out_channels),
@@ -122,6 +122,41 @@ class PointNetEncoderXYZ(nn.Module):
         x = torch.max(x, 1)[0]
         x = self.final_projection(x)
         return x
+    
+
+class MultiStagePointNetEncoder(nn.Module):
+    def __init__(self, h_dim=128, out_channels=128, num_layers=4, **kwargs):
+        super().__init__()
+
+        self.h_dim = h_dim
+        self.out_channels = out_channels
+        self.num_layers = num_layers
+
+        self.act = nn.LeakyReLU(negative_slope=0.0, inplace=False)
+
+        self.conv_in = nn.Conv1d(3, h_dim, kernel_size=1)
+        self.layers, self.global_layers = nn.ModuleList(), nn.ModuleList()
+        for i in range(self.num_layers):
+            self.layers.append(nn.Conv1d(h_dim, h_dim, kernel_size=1))
+            self.global_layers.append(nn.Conv1d(h_dim * 2, h_dim, kernel_size=1))
+        self.conv_out = nn.Conv1d(h_dim * self.num_layers, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        x = x.transpose(1, 2) # [B, N, 3] --> [B, 3, N]
+        y = self.act(self.conv_in(x))
+        feat_list = []
+        for i in range(self.num_layers):
+            y = self.act(self.layers[i](y))
+            y_global = y.max(-1, keepdim=True).values
+            y = torch.cat([y, y_global.expand_as(y)], dim=1)
+            y = self.act(self.global_layers[i](y))
+            feat_list.append(y)
+        x = torch.cat(feat_list, dim=1)
+        x = self.conv_out(x)
+
+        x_global = x.max(-1).values
+
+        return x_global
     
 
 class ResEncoder(nn.Module):
@@ -196,15 +231,16 @@ class DiagGaussianMLPVPolicy(nn.Module):
     def __init__(self, obs_dim, act_dim, repr_dim=1024, feature_dim=1024, hidden_dim=512,
                  init_log_std=0., num_cams=2):
         super().__init__()
-        self.point_encoder = PointNetEncoderXYZ(in_channels=3,
-                                                out_channels=64,
-                                                use_layernorm=True,
-                                                final_norm='layernorm',
-                                                use_projection=True)
+        # self.point_encoder = PointNetEncoderXYZ(in_channels=3,
+        #                                         out_channels=64,
+        #                                         use_layernorm=True,
+        #                                         final_norm='layernorm',
+        #                                         use_projection=True)
+        self.point_encoder = MultiStagePointNetEncoder(out_channels=128)
         # self.trunk = nn.Sequential(nn.Linear(repr_dim * num_cams, feature_dim),
         #                            nn.LayerNorm(feature_dim), nn.Tanh())
 
-        self.policy = nn.Sequential(nn.Linear(obs_dim + 64, hidden_dim),  # feature_dim + 
+        self.policy = nn.Sequential(nn.Linear(obs_dim + self.point_encoder.out_channels, hidden_dim),  # feature_dim + 
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, hidden_dim),
                                     nn.ReLU(inplace=True),
