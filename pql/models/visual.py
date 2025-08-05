@@ -160,23 +160,23 @@ class MultiStagePointNetEncoder(nn.Module):
     
 
 class ResEncoder(nn.Module):
-    def __init__(self, num_cams=2):
+    def __init__(self, width=128, height=128, num_cams=2):
         super(ResEncoder, self).__init__()
         self.num_cams = num_cams
         self.model = resnet18(pretrained=True)
-        self.transform = transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224)
-            ])
+        # self.transform = transforms.Compose([
+        #         transforms.Resize(256),
+        #         transforms.CenterCrop(224)
+        #     ])
 
-        for param in self.model.parameters():
-            param.requires_grad = False
+        # for param in self.model.parameters():
+        #     param.requires_grad = False
 
         self.num_ftrs = self.model.fc.in_features
         self.model.fc = nn.Identity()
         self.repr_dim = 1024
         self.image_channel = 3
-        x = torch.randn([32] + [3 * self.image_channel, 128, 128])
+        x = torch.randn([32] + [self.image_channel, width, height])
         with torch.no_grad():
             out_shape = self.forward_conv(x).shape
         self.out_dim = out_shape[1]
@@ -193,7 +193,7 @@ class ResEncoder(nn.Module):
     def forward_conv(self, obs, flatten=True, aug=False):
         if aug:
             obs = self.aug(obs)
-        obs = obs / 255.0 - 0.5
+        # obs = obs / 255.0 - 0.5
         time_step = obs.shape[1] // self.image_channel
         obs = obs.reshape(obs.shape[0], time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
         obs = obs.reshape(obs.shape[0] * time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
@@ -229,33 +229,37 @@ class ResEncoder(nn.Module):
 
 class DiagGaussianMLPVPolicy(nn.Module):
     def __init__(self, obs_dim, act_dim, repr_dim=1024, feature_dim=1024, hidden_dim=512,
-                 init_log_std=0., num_cams=2):
+                 init_log_std=0., num_cams=2, width=128, height=128):
         super().__init__()
+        self.encoder = ResEncoder(width=width, height=height, num_cams=num_cams)
         self.point_encoder = PointNetEncoderXYZ(in_channels=3,
                                                 out_channels=64,
                                                 use_layernorm=True,
                                                 final_norm='layernorm',
                                                 use_projection=True)
-        # self.point_encoder = MultiStagePointNetEncoder(out_channels=128)
-        # self.trunk = nn.Sequential(nn.Linear(repr_dim * num_cams, feature_dim),
-        #                            nn.LayerNorm(feature_dim), nn.Tanh())
+        self.trunk = nn.Sequential(nn.Linear(self.encoder.repr_dim * num_cams, feature_dim),
+                                   nn.LayerNorm(feature_dim), nn.ReLU(inplace=True))
 
-        self.policy = nn.Sequential(nn.Linear(obs_dim + self.point_encoder.out_channels, hidden_dim),  # feature_dim + 
+        self.policy = nn.Sequential(nn.Linear(obs_dim + self.point_encoder.out_channels + feature_dim, hidden_dim),  # feature_dim + 
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, hidden_dim),
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, act_dim))
 
-        self.apply(weight_init)
+        self.point_encoder.apply(weight_init)
+        self.trunk.apply(weight_init)
+        self.policy.apply(weight_init)
+
         self.logstd = nn.Parameter(torch.full((act_dim,), init_log_std))
 
     def forward(self, img, state, pc=None, sample=True, aug=False):
         return self.get_actions(img, state, pc=pc, sample=sample, aug=aug)[0]
 
-    def get_actions(self, x, state, pc=None, sample=True, aug=False):
-        # h = self.trunk(x)
-        # h = torch.cat([h, state], dim=-1)
-        h = state
+    def get_actions(self, img, state, pc=None, sample=True, aug=False):
+        x = self.encoder(img, aug=aug)
+        h = self.trunk(x)
+        h = torch.cat([h, state], dim=-1)
+        # h = state
         if pc is not None:
             pc = self.point_encoder(pc)
             h = torch.cat([h, pc], dim=-1)
