@@ -157,7 +157,30 @@ class MultiStagePointNetEncoder(nn.Module):
         x_global = x.max(-1).values
 
         return x_global
-    
+
+
+class DINOEncoder(nn.Module):
+    def __init__(self, width=128, height=128, num_cams=2):
+        super(DINOEncoder, self).__init__()
+        self.num_cams = num_cams
+        self.model = torch.hub.load('facebookresearch/dinov2', "dinov2_vits14")
+        for param in self.model.parameters():
+            param.requires_grad = False
+        self.repr_dim = 384
+        self.aug = RandomShiftsAug(pad=4)
+
+    def forward_single(self, x, aug=False):
+        if aug:
+            x = self.aug(x)
+        x = self.model(x)
+        return x
+
+    def forward(self, obs, aug=False):
+        assert obs.shape[1] == self.num_cams
+        x = self.forward_single(obs[:, 0], aug=aug)
+        for i in range(1, obs.shape[1]):
+            x = torch.cat([x, self.forward_single(obs[:, i], aug=aug)], dim=-1)
+        return x
 
 class ResEncoder(nn.Module):
     def __init__(self, width=128, height=128, num_cams=2):
@@ -229,9 +252,14 @@ class ResEncoder(nn.Module):
 
 class DiagGaussianMLPVPolicy(nn.Module):
     def __init__(self, obs_dim, act_dim, repr_dim=1024, feature_dim=1024, hidden_dim=512,
-                 init_log_std=0., num_cams=2, width=128, height=128):
+                 init_log_std=0., num_cams=2, width=128, height=128, encoder_type='resnet'):
         super().__init__()
-        self.encoder = ResEncoder(width=width, height=height, num_cams=num_cams)
+        if encoder_type == 'resnet':
+            self.encoder = ResEncoder(width=width, height=height, num_cams=num_cams)
+        elif encoder_type == 'dino':
+            self.encoder = DINOEncoder(width=width, height=height, num_cams=num_cams)
+        else:
+            raise ValueError(f"Invalid encoder type: {encoder_type}")
         self.point_encoder = PointNetEncoderXYZ(in_channels=3,
                                                 out_channels=64,
                                                 use_layernorm=True,
