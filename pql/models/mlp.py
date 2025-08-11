@@ -276,3 +276,50 @@ class MLPCritic(nn.Module):
 
     def forward(self, state: Tensor) -> Tensor:
         return self.critic(state)  # advantage value
+
+
+# def he_normal_init(tensor):
+#     nn.init.kaiming_normal_(tensor, nonlinearity='relu')
+
+# import math
+# def orthogonal_init(tensor, gain=math.sqrt(2)):
+#     nn.init.orthogonal_(tensor, gain=gain)
+
+# class MLPCritic(nn.Module):
+#     def __init__(self, state_dim, action_dim, hidden_dim=512, num_blocks=2, dtype=torch.float32):
+#         super().__init__()
+#         if isinstance(state_dim, Sequence):
+#             state_dim = state_dim[0]
+        
+#         self.input_layer = nn.Linear(state_dim, hidden_dim)
+#         orthogonal_init(self.input_layer.weight, gain=1.0)
+#         self.activation = nn.ReLU()
+
+#         self.blocks = nn.ModuleList([
+#             self._make_residual_block(hidden_dim, dtype)
+#             for _ in range(num_blocks)
+#         ])
+
+#         self.final_norm = nn.LayerNorm(hidden_dim)
+#         self.output_layer = nn.Linear(hidden_dim, 1)
+
+#     def _make_residual_block(self, hidden_dim: int, dtype: torch.dtype):
+#         block = nn.Sequential(
+#             nn.LayerNorm(hidden_dim),
+#             nn.Linear(hidden_dim, hidden_dim * 4),
+#             nn.ReLU(),
+#             nn.Linear(hidden_dim * 4, hidden_dim)
+#         )
+#         # Apply initialization
+#         he_normal_init(block[1].weight)
+#         he_normal_init(block[3].weight)
+#         return block
+
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         x = self.input_layer(x)
+#         for block in self.blocks:
+#             res = x
+#             x = block(x)
+#             x = x + res
+#         x = self.final_norm(x)
+#         return self.output_layer(x)

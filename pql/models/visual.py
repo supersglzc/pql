@@ -258,24 +258,31 @@ class DiagGaussianMLPVPolicy(nn.Module):
             self.encoder = ResEncoder(width=width, height=height, num_cams=num_cams)
         elif encoder_type == 'dino':
             self.encoder = DINOEncoder(width=width, height=height, num_cams=num_cams)
+        elif encoder_type is None:
+            self.encoder = None
         else:
             raise ValueError(f"Invalid encoder type: {encoder_type}")
+        if self.encoder is not None:
+            self.trunk = nn.Sequential(nn.Linear(self.encoder.repr_dim * num_cams, feature_dim),
+                                    nn.LayerNorm(feature_dim), nn.ReLU(inplace=True))
+            self.trunk.apply(weight_init)
+            input_dim = feature_dim
+        else:
+            input_dim = 0
+            
         self.point_encoder = PointNetEncoderXYZ(in_channels=3,
                                                 out_channels=64,
                                                 use_layernorm=True,
                                                 final_norm='layernorm',
                                                 use_projection=True)
-        self.trunk = nn.Sequential(nn.Linear(self.encoder.repr_dim * num_cams, feature_dim),
-                                   nn.LayerNorm(feature_dim), nn.ReLU(inplace=True))
-
-        self.policy = nn.Sequential(nn.Linear(obs_dim + self.point_encoder.out_channels + feature_dim, hidden_dim),  # feature_dim + 
+        input_dim += obs_dim + self.point_encoder.out_channels
+        self.policy = nn.Sequential(nn.Linear(input_dim, hidden_dim),  # feature_dim + 
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, hidden_dim),
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, act_dim))
 
         self.point_encoder.apply(weight_init)
-        self.trunk.apply(weight_init)
         self.policy.apply(weight_init)
 
         self.logstd = nn.Parameter(torch.full((act_dim,), init_log_std))
@@ -284,10 +291,12 @@ class DiagGaussianMLPVPolicy(nn.Module):
         return self.get_actions(img, state, pc=pc, sample=sample, aug=aug)[0]
 
     def get_actions(self, img, state, pc=None, sample=True, aug=False):
-        x = self.encoder(img, aug=aug)
-        h = self.trunk(x)
-        h = torch.cat([h, state], dim=-1)
-        # h = state
+        if self.encoder is not None:
+            x = self.encoder(img, aug=aug)
+            h = self.trunk(x)
+            h = torch.cat([h, state], dim=-1)
+        else:
+            h = state
         if pc is not None:
             pc = self.point_encoder(pc)
             h = torch.cat([h, pc], dim=-1)
