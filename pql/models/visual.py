@@ -1,4 +1,5 @@
 import numpy as np
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -51,6 +52,62 @@ def weight_init(m):
         nn.init.orthogonal_(m.weight.data, gain)
         if hasattr(m.bias, 'data'):
             m.bias.data.fill_(0.0)
+
+def fourier_encode(x: torch.Tensor, num_freqs: int, max_freq: float, include_input: bool=False) -> torch.Tensor:
+    """
+    Args:
+        x: [B, C]
+        num_freqs: Number of frequency bands
+        max_freq: Max frequency
+        include_input: Whether to include original input
+
+    Returns:
+        Tensor of shape [B, C * (2 * num_freqs) (+ C if include_input)]
+    """
+    B, C = x.shape
+    freqs = torch.exp(torch.linspace(0.0, math.log(max_freq + 1e-6), num_freqs, device=x.device, dtype=x.dtype))  # [F]
+    xb = x.unsqueeze(-1) * (2.0 * math.pi) * freqs                          # [B, C, F]
+    enc = torch.cat([torch.sin(xb), torch.cos(xb)], dim=-1)                # [B, C, 2F]
+    enc = enc.reshape(B, C * (2 * num_freqs)) / math.sqrt(num_freqs)       # Normalize
+    return torch.cat([x, enc], dim=-1) if include_input else enc           # [B, C*(2F) (+C)]
+
+class TimestepEmbedder(nn.Module):
+    """
+    Embed multi-dimensional continuous input using Fourier features + LayerNorm + Linear.
+    Originally for t:[B] or [B,1], now generalized for t:[B,C] (e.g., C=51).
+    """
+    def __init__(self, input_dim: int, d_model: int, freq_dim: int = 128, max_freq: float = 300.0):
+        """
+        Args:
+            input_dim: The number of input dimensions (e.g., 51)
+            d_model: Output embedding dimension
+            freq_dim: Total number of Fourier features (should be even)
+            max_freq: Maximum frequency
+        """
+        super().__init__()
+        assert freq_dim % 2 == 0, "freq_dim must be even"
+        self.freq_dim = freq_dim
+        self.max_freq = max_freq
+        self.input_dim = input_dim
+        out_dim = input_dim * (2 * freq_dim + (1 if True else 0))  # include_input=True
+        self.feat_norm = nn.LayerNorm(out_dim)
+        self.proj = nn.Linear(out_dim, d_model)
+        nn.init.normal_(self.proj.weight, mean=0.0, std=0.02)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [B, C], e.g., C=51
+
+        Returns:
+            [B, d_model]
+        """
+        if x.ndim != 2:
+            raise ValueError(f"Expected input of shape [B, C], got {x.shape}")
+        feats = fourier_encode(x, self.freq_dim, self.max_freq, include_input=True)
+        feats = self.feat_norm(feats)
+        return self.proj(feats)
 
 class PointNetEncoderXYZ(nn.Module):
     """Encoder for Pointcloud
@@ -122,42 +179,6 @@ class PointNetEncoderXYZ(nn.Module):
         x = torch.max(x, 1)[0]
         x = self.final_projection(x)
         return x
-    
-
-class MultiStagePointNetEncoder(nn.Module):
-    def __init__(self, h_dim=128, out_channels=128, num_layers=4, **kwargs):
-        super().__init__()
-
-        self.h_dim = h_dim
-        self.out_channels = out_channels
-        self.num_layers = num_layers
-
-        self.act = nn.LeakyReLU(negative_slope=0.0, inplace=False)
-
-        self.conv_in = nn.Conv1d(3, h_dim, kernel_size=1)
-        self.layers, self.global_layers = nn.ModuleList(), nn.ModuleList()
-        for i in range(self.num_layers):
-            self.layers.append(nn.Conv1d(h_dim, h_dim, kernel_size=1))
-            self.global_layers.append(nn.Conv1d(h_dim * 2, h_dim, kernel_size=1))
-        self.conv_out = nn.Conv1d(h_dim * self.num_layers, out_channels, kernel_size=1)
-
-    def forward(self, x):
-        x = x.transpose(1, 2) # [B, N, 3] --> [B, 3, N]
-        y = self.act(self.conv_in(x))
-        feat_list = []
-        for i in range(self.num_layers):
-            y = self.act(self.layers[i](y))
-            y_global = y.max(-1, keepdim=True).values
-            y = torch.cat([y, y_global.expand_as(y)], dim=1)
-            y = self.act(self.global_layers[i](y))
-            feat_list.append(y)
-        x = torch.cat(feat_list, dim=1)
-        x = self.conv_out(x)
-
-        x_global = x.max(-1).values
-
-        return x_global
-
 
 class DINOEncoder(nn.Module):
     def __init__(self, width=128, height=128, num_cams=2):
@@ -270,19 +291,25 @@ class DiagGaussianMLPVPolicy(nn.Module):
         else:
             input_dim = 0
             
-        self.point_encoder = PointNetEncoderXYZ(in_channels=3,
-                                                out_channels=64,
-                                                use_layernorm=True,
-                                                final_norm='layernorm',
-                                                use_projection=True)
-        input_dim += obs_dim + self.point_encoder.out_channels
+        # self.point_encoder = PointNetEncoderXYZ(in_channels=3,
+        #                                         out_channels=64,
+        #                                         use_layernorm=True,
+        #                                         final_norm='layernorm',
+        #                                         use_projection=True)
+        # self.obs_encoder = TimestepEmbedder(d_model=obs_dim, freq_dim=256, max_freq=300.0)
+        # self.obs_encoder = nn.Sequential(nn.Linear(obs_dim, 256), nn.ReLU(inplace=True), nn.Linear(256, 256), nn.LayerNorm(256))
+        from pql.models.pointnet import Encoder
+        self.point_state_encoder = Encoder(state_dim=51, pointcloud_feature_dim=128)
+        input_dim += self.point_state_encoder.n_output_channels
+        self.point_state_encoder.apply(weight_init)
         self.policy = nn.Sequential(nn.Linear(input_dim, hidden_dim),  # feature_dim + 
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, hidden_dim),
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, act_dim))
 
-        self.point_encoder.apply(weight_init)
+        # self.point_encoder.apply(weight_init)
+        # self.obs_encoder.apply(weight_init)
         self.policy.apply(weight_init)
 
         self.logstd = nn.Parameter(torch.full((act_dim,), init_log_std))
@@ -291,15 +318,14 @@ class DiagGaussianMLPVPolicy(nn.Module):
         return self.get_actions(img, state, pc=pc, sample=sample, aug=aug)[0]
 
     def get_actions(self, img, state, pc=None, sample=True, aug=False):
+        point_state_feat = self.point_state_encoder(state, pc)
         if self.encoder is not None:
             x = self.encoder(img, aug=aug)
             h = self.trunk(x)
-            h = torch.cat([h, state], dim=-1)
+            h = torch.cat([h, point_state_feat], dim=-1)
         else:
-            h = state
-        if pc is not None:
-            pc = self.point_encoder(pc)
-            h = torch.cat([h, pc], dim=-1)
+            h = point_state_feat
+
         mean = self.policy(h)
         log_std = self.logstd.expand_as(mean)
         std = torch.exp(log_std)

@@ -21,9 +21,10 @@ class AgentPPOV(ActorCriticBase):
                                          model_name_to_path[self.cfg.algo.act_class])
         self.student_observation_dim = self.env.student_observation_space.shape[-1]
         self.actor = act_class(self.student_observation_dim, 
-                               self.action_dim, 
+                               self.action_dim,
+                               encoder_type=None,
                                feature_dim=512, 
-                               num_cams=self.cfg.task.cam.num_cams,
+                               num_cams=2,
                                width=128,
                                height=128).to(self.cfg.device)
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), self.cfg.algo.actor_lr)
