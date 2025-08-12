@@ -11,7 +11,7 @@ from pql.utils.common import load_class_from_path
 from pql.utils.common import parse_multi_rew
 from pql.models import model_name_to_path
 from bidex.utils.symmetry import load_symmetric_system, SymmetryManager, slice_tensor
-from pql.models.diffusion import EquivariantDiffusionPolicy
+from pql.models.ediffusion import EquivariantDiffusionPolicy
 
 @dataclass
 class AgentEQSD(ActorCriticBase):
