@@ -299,7 +299,7 @@ class DiagGaussianMLPVPolicy(nn.Module):
         # self.obs_encoder = TimestepEmbedder(d_model=obs_dim, freq_dim=256, max_freq=300.0)
         # self.obs_encoder = nn.Sequential(nn.Linear(obs_dim, 256), nn.ReLU(inplace=True), nn.Linear(256, 256), nn.LayerNorm(256))
         from pql.models.pointnet import Encoder
-        self.point_state_encoder = Encoder(state_dim=51, pointcloud_feature_dim=128)
+        self.point_state_encoder = Encoder(state_dim=obs_dim, pointcloud_feature_dim=128)
         input_dim += self.point_state_encoder.n_output_channels
         self.point_state_encoder.apply(weight_init)
         self.policy = nn.Sequential(nn.Linear(input_dim, hidden_dim),  # feature_dim + 
@@ -318,6 +318,9 @@ class DiagGaussianMLPVPolicy(nn.Module):
         return self.get_actions(img, state, pc=pc, sample=sample, aug=aug)[0]
 
     def get_actions(self, img, state, pc=None, sample=True, aug=False):
+        # assert state and pc contains no nan
+        assert not torch.isnan(state).any(), "state contains nan"
+        assert not torch.isnan(pc).any(), "pc contains nan"
         point_state_feat = self.point_state_encoder(state, pc)
         if self.encoder is not None:
             x = self.encoder(img, aug=aug)
