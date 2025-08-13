@@ -164,7 +164,7 @@ def create_mlp(
 class Encoder(nn.Module):
     def __init__(self, 
                  state_dim, 
-                 state_mlp_size=(128, 128), 
+                 state_feature_dim=64, 
                  state_mlp_activation_fn=nn.ReLU,
                  pointcloud_feature_dim=1024,
                  ):
@@ -173,7 +173,7 @@ class Encoder(nn.Module):
         
         # self.extractor = MultiStagePointNetEncoder(out_channels=pointcloud_feature_dim)
         self.extractor = PointNetEncoderXYZ(out_channels=pointcloud_feature_dim)
-
+        state_mlp_size = (state_feature_dim, state_feature_dim)
         if len(state_mlp_size) == 0:
             raise RuntimeError(f"State mlp size is empty")
         elif len(state_mlp_size) == 1:

@@ -139,8 +139,7 @@ class DiffusionPolicy(nn.Module):
         self.action_dim = action_dim
         self.diffusion_iter = diffusion_iter
         self.device = device
-        from pql.models.pointnet import Encoder
-        self.point_state_encoder = Encoder(state_dim=state_dim, pointcloud_feature_dim=128)
+        self.point_state_encoder = Encoder(state_dim=state_dim, state_feature_dim=128, pointcloud_feature_dim=256)
         self.point_state_encoder.apply(weight_init)
 
         # init network
