@@ -48,7 +48,79 @@ class MultiStagePointNetEncoder(nn.Module):
         x_global = x.max(-1).values
 
         return x_global
-    
+
+
+class PointNetEncoderXYZ(nn.Module):
+    """Encoder for Pointcloud
+    """
+
+    def __init__(self,
+                 in_channels: int=3,
+                 out_channels: int=1024,
+                 use_layernorm: bool=True,
+                 final_norm: str='layernorm',
+                 use_projection: bool=True,
+                 **kwargs
+                 ):
+        """_summary_
+
+        Args:
+            in_channels (int): feature size of input (3 or 6)
+            input_transform (bool, optional): whether to use transformation for coordinates. Defaults to True.
+            feature_transform (bool, optional): whether to use transformation for features. Defaults to True.
+            is_seg (bool, optional): for segmentation or classification. Defaults to False.
+        """
+        super().__init__()
+        block_channel = [64, 128, 256]
+        # cprint("[PointNetEncoderXYZ] use_layernorm: {}".format(use_layernorm), 'cyan')
+        # cprint("[PointNetEncoderXYZ] use_final_norm: {}".format(final_norm), 'cyan')
+        
+        assert in_channels == 3, print(f"PointNetEncoderXYZ only supports 3 channels, but got {in_channels}")
+       
+        self.mlp = nn.Sequential(
+            nn.Linear(in_channels, block_channel[0]),
+            nn.LayerNorm(block_channel[0]) if use_layernorm else nn.Identity(),
+            nn.ReLU(),
+            nn.Linear(block_channel[0], block_channel[1]),
+            nn.LayerNorm(block_channel[1]) if use_layernorm else nn.Identity(),
+            nn.ReLU(),
+            nn.Linear(block_channel[1], block_channel[2]),
+            nn.LayerNorm(block_channel[2]) if use_layernorm else nn.Identity(),
+            nn.ReLU(),
+        )
+        
+        self.out_channels = out_channels
+        if final_norm == 'layernorm':
+            self.final_projection = nn.Sequential(
+                nn.Linear(block_channel[-1], out_channels),
+                nn.LayerNorm(out_channels)
+            )
+        elif final_norm == 'none':
+            self.final_projection = nn.Linear(block_channel[-1], out_channels)
+        else:
+            raise NotImplementedError(f"final_norm: {final_norm}")
+
+        self.use_projection = use_projection
+        if not use_projection:
+            self.final_projection = nn.Identity()
+            # cprint("[PointNetEncoderXYZ] not use projection", "yellow")
+            
+        VIS_WITH_GRAD_CAM = False
+        if VIS_WITH_GRAD_CAM:
+            self.gradient = None
+            self.feature = None
+            self.input_pointcloud = None
+            self.mlp[0].register_forward_hook(self.save_input)
+            self.mlp[6].register_forward_hook(self.save_feature)
+            self.mlp[6].register_backward_hook(self.save_gradient)
+         
+         
+    def forward(self, x):
+        x = self.mlp(x)
+        x = torch.max(x, 1)[0]
+        x = self.final_projection(x)
+        return x
+
 
 def create_mlp(
         input_dim: int,
@@ -88,47 +160,19 @@ def create_mlp(
     if squash_output:
         modules.append(nn.Tanh())
     return modules
-
-
-class StateEncoder(nn.Module):
-    def __init__(self, 
-                 observation_space: Dict, 
-                 state_mlp_size=(64, 64), state_mlp_activation_fn=nn.ReLU):
-        super().__init__()
-        self.state_key = 'full_state'
-        self.state_shape = observation_space[self.state_key]
-        
-        if len(state_mlp_size) == 0:
-            raise RuntimeError(f"State mlp size is empty")
-        elif len(state_mlp_size) == 1:
-            net_arch = []
-        else:
-            net_arch = state_mlp_size[:-1]
-        output_dim = state_mlp_size[-1]
-
-        self.state_mlp = nn.Sequential(*create_mlp(self.state_shape[0], output_dim, net_arch, state_mlp_activation_fn))
-
-        self.output_dim = output_dim
-        
-    def output_shape(self):
-        return self.output_dim
-        
-    def forward(self, observations: Dict) -> torch.Tensor:
-        state = observations[self.state_key]
-        state_feat = self.state_mlp(state)
-        return state_feat
     
 class Encoder(nn.Module):
     def __init__(self, 
                  state_dim, 
-                 state_mlp_size=(64, 64), 
+                 state_mlp_size=(128, 128), 
                  state_mlp_activation_fn=nn.ReLU,
                  pointcloud_feature_dim=1024,
                  ):
         super().__init__()
         self.n_output_channels = pointcloud_feature_dim
         
-        self.extractor = MultiStagePointNetEncoder(out_channels=pointcloud_feature_dim)
+        # self.extractor = MultiStagePointNetEncoder(out_channels=pointcloud_feature_dim)
+        self.extractor = PointNetEncoderXYZ(out_channels=pointcloud_feature_dim)
 
         if len(state_mlp_size) == 0:
             raise RuntimeError(f"State mlp size is empty")
