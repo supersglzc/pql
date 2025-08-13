@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torchvision.models import resnet18, resnet34
 from torchvision import transforms
 from torch.distributions import Independent, Normal
-
+from pql.models.pointnet import PointNetEncoderXYZ
 
 class RandomShiftsAug(nn.Module):
     def __init__(self, pad):
@@ -167,40 +167,37 @@ class DiagGaussianMLPVPolicy(nn.Module):
                  init_log_std=0., num_cams=2, width=128, height=128, encoder_type='resnet'):
         super().__init__()
         if encoder_type == 'resnet':
-            self.encoder = ResEncoder(width=width, height=height, num_cams=num_cams)
+            self.img_encoder = ResEncoder(width=width, height=height, num_cams=num_cams)
         elif encoder_type == 'dino':
-            self.encoder = DINOEncoder(width=width, height=height, num_cams=num_cams)
+            self.img_encoder = DINOEncoder(width=width, height=height, num_cams=num_cams)
         elif encoder_type is None:
-            self.encoder = None
+            self.img_encoder = None
         else:
             raise ValueError(f"Invalid encoder type: {encoder_type}")
-        if self.encoder is not None:
-            self.trunk = nn.Sequential(nn.Linear(self.encoder.repr_dim * num_cams, feature_dim),
+        if self.img_encoder is not None:
+            self.trunk = nn.Sequential(nn.Linear(self.img_encoder.repr_dim * num_cams, feature_dim),
                                     nn.LayerNorm(feature_dim), nn.ReLU(inplace=True))
             self.trunk.apply(weight_init)
             input_dim = feature_dim
         else:
             input_dim = 0
-            
-        # self.point_encoder = PointNetEncoderXYZ(in_channels=3,
-        #                                         out_channels=64,
-        #                                         use_layernorm=True,
-        #                                         final_norm='layernorm',
-        #                                         use_projection=True)
-        # self.obs_encoder = TimestepEmbedder(d_model=obs_dim, freq_dim=256, max_freq=300.0)
+        self.point_encoder = PointNetEncoderXYZ(in_channels=3,
+                                                out_channels=256,
+                                                use_layernorm=True,
+                                                final_norm='layernorm',
+                                                use_projection=True)
         # self.obs_encoder = nn.Sequential(nn.Linear(obs_dim, 256), nn.ReLU(inplace=True), nn.Linear(256, 256), nn.LayerNorm(256))
-        from pql.models.pointnet import Encoder
-        self.point_state_encoder = Encoder(state_dim=obs_dim, state_feature_dim=64, pointcloud_feature_dim=64)
-        input_dim += self.point_state_encoder.n_output_channels
-        self.point_state_encoder.apply(weight_init)
+        # input_dim += 256 + 256
+        self.obs_encoder = nn.Identity()
+        input_dim += 256 + obs_dim
         self.policy = nn.Sequential(nn.Linear(input_dim, hidden_dim),  # feature_dim + 
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, hidden_dim),
                                     nn.ReLU(inplace=True),
                                     nn.Linear(hidden_dim, act_dim))
 
-        # self.point_encoder.apply(weight_init)
-        # self.obs_encoder.apply(weight_init)
+        self.point_encoder.apply(weight_init)
+        self.obs_encoder.apply(weight_init)
         self.policy.apply(weight_init)
 
         self.logstd = nn.Parameter(torch.full((act_dim,), init_log_std))
@@ -212,9 +209,11 @@ class DiagGaussianMLPVPolicy(nn.Module):
         # assert state and pc contains no nan
         assert not torch.isnan(state).any(), "state contains nan"
         assert not torch.isnan(pc).any(), "pc contains nan"
-        point_state_feat = self.point_state_encoder(state, pc)
-        if self.encoder is not None:
-            x = self.encoder(img, aug=aug)
+        point_feat = self.point_encoder(pc)
+        obs_feat = self.obs_encoder(state)
+        point_state_feat = torch.cat([point_feat, obs_feat], dim=-1)
+        if self.img_encoder is not None:
+            x = self.img_encoder(img, aug=aug)
             h = self.trunk(x)
             h = torch.cat([h, point_state_feat], dim=-1)
         else:

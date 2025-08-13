@@ -128,7 +128,7 @@ class MLPResNet(nn.Module):
         return x
 
 
-from pql.models.pointnet import Encoder
+from pql.models.pointnet import Encoder, PointNetEncoderXYZ
 from pql.models.visual import weight_init
 class DiffusionPolicy(nn.Module):
     def __init__(self, state_dim, action_dim, diffusion_iter, device="cuda"):
@@ -139,13 +139,19 @@ class DiffusionPolicy(nn.Module):
         self.action_dim = action_dim
         self.diffusion_iter = diffusion_iter
         self.device = device
-        self.point_state_encoder = Encoder(state_dim=state_dim, state_feature_dim=128, pointcloud_feature_dim=256)
-        self.point_state_encoder.apply(weight_init)
+        self.point_encoder = PointNetEncoderXYZ(in_channels=3,
+                                                out_channels=256,
+                                                use_layernorm=True,
+                                                final_norm='layernorm',
+                                                use_projection=True)
+        self.point_encoder.apply(weight_init)
+        self.obs_encoder = nn.Identity()
+        self.obs_encoder.apply(weight_init)
 
         # init network
         self.net = DiffusionNet(
-            transition_dim=self.point_state_encoder.n_output_channels + action_dim,
-            cond_dim=self.point_state_encoder.n_output_channels)
+            transition_dim=self.point_encoder.n_output_channels + action_dim + state_dim,
+            cond_dim=self.point_encoder.n_output_channels + state_dim)
 
         # init noise scheduler
         self.noise_scheduler = DDPMScheduler(
@@ -161,7 +167,9 @@ class DiffusionPolicy(nn.Module):
 
     def get_actions(self, img, state, pc, sample=True):
         B = state.shape[0]
-        point_state_feat = self.point_state_encoder(state, pc)
+        point_feat = self.point_encoder(pc)
+        obs_feat = self.obs_encoder(state)
+        point_state_feat = torch.cat([point_feat, obs_feat], dim=-1)
         # init action from Guassian noise
         noisy_action = torch.randn(
             (B, self.action_dim), device=self.device)
