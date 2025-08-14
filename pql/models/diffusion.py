@@ -128,7 +128,7 @@ class MLPResNet(nn.Module):
         return x
 
 
-from pql.models.pointnet import Encoder, PointNetEncoderXYZ
+from pql.models.pointnet import PointNetEncoderXYZ
 from pql.models.visual import weight_init
 class DiffusionPolicy(nn.Module):
     def __init__(self, state_dim, action_dim, diffusion_iter, device="cuda"):
@@ -150,8 +150,8 @@ class DiffusionPolicy(nn.Module):
 
         # init network
         self.net = DiffusionNet(
-            transition_dim=self.point_encoder.n_output_channels + action_dim + state_dim,
-            cond_dim=self.point_encoder.n_output_channels + state_dim)
+            transition_dim=self.point_encoder.out_channels + action_dim + state_dim,
+            cond_dim=self.point_encoder.out_channels + state_dim)
 
         # init noise scheduler
         self.noise_scheduler = DDPMScheduler(
@@ -216,7 +216,10 @@ class DiffusionPolicy(nn.Module):
         # (this is the forward diffusion process)
         noisy_action = self.noise_scheduler.add_noise(
             action, noise, timesteps)
-        point_state_feat = self.point_state_encoder(state, pc)
+        point_feat = self.point_encoder(pc)
+        obs_feat = self.obs_encoder(state)
+        point_state_feat = torch.cat([point_feat, obs_feat], dim=-1)
+
         # predict the noise residual
         noise_pred = self.net(
                 noisy_action,
