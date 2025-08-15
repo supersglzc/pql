@@ -145,13 +145,14 @@ class DiffusionPolicy(nn.Module):
                                                 final_norm='layernorm',
                                                 use_projection=True)
         self.point_encoder.apply(weight_init)
-        self.obs_encoder = nn.Identity()
+        # self.obs_encoder = nn.Identity()
+        self.obs_encoder = nn.Sequential(nn.Linear(state_dim, 256), nn.ReLU(inplace=True), nn.Linear(256, 256), nn.LayerNorm(256))
         self.obs_encoder.apply(weight_init)
 
         # init network
         self.net = DiffusionNet(
-            transition_dim=self.point_encoder.out_channels + action_dim + state_dim,
-            cond_dim=self.point_encoder.out_channels + state_dim)
+            transition_dim=self.point_encoder.out_channels + action_dim + 256,
+            cond_dim=self.point_encoder.out_channels + 256)
 
         # init noise scheduler
         self.noise_scheduler = DDPMScheduler(
