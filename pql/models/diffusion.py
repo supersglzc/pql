@@ -128,7 +128,7 @@ class MLPResNet(nn.Module):
         return x
 
 
-from pql.models.pointnet import PointNetEncoderXYZ
+from pql.models.pointnet import PointNetEncoderXYZ, MultiStagePointNetEncoder
 from pql.models.visual import weight_init
 class DiffusionPolicy(nn.Module):
     def __init__(self, state_dim, action_dim, diffusion_iter, device="cuda"):
@@ -144,6 +144,7 @@ class DiffusionPolicy(nn.Module):
                                                 use_layernorm=True,
                                                 final_norm='layernorm',
                                                 use_projection=True)
+        # self.point_encoder = MultiStagePointNetEncoder(out_channels=128)
         self.point_encoder.apply(weight_init)
         # self.obs_encoder = nn.Identity()
         self.obs_encoder = nn.Sequential(nn.Linear(state_dim, 256), nn.ReLU(inplace=True), nn.Linear(256, 256), nn.LayerNorm(256))
@@ -151,8 +152,8 @@ class DiffusionPolicy(nn.Module):
 
         # init network
         self.net = DiffusionNet(
-            transition_dim=self.point_encoder.out_channels + action_dim,
-            cond_dim=self.point_encoder.out_channels)
+            transition_dim=self.point_encoder.out_channels + action_dim + 256,
+            cond_dim=self.point_encoder.out_channels + 256)
 
         # init noise scheduler
         self.noise_scheduler = DDPMScheduler(
@@ -170,7 +171,7 @@ class DiffusionPolicy(nn.Module):
         B = state.shape[0]
         point_feat = self.point_encoder(pc)
         obs_feat = self.obs_encoder(state)
-        point_state_feat = torch.cat([point_feat], dim=-1)
+        point_state_feat = torch.cat([point_feat, obs_feat], dim=-1)
         # init action from Guassian noise
         noisy_action = torch.randn(
             (B, self.action_dim), device=self.device)
@@ -219,7 +220,7 @@ class DiffusionPolicy(nn.Module):
             action, noise, timesteps)
         point_feat = self.point_encoder(pc)
         obs_feat = self.obs_encoder(state)
-        point_state_feat = torch.cat([point_feat], dim=-1)
+        point_state_feat = torch.cat([point_feat, obs_feat], dim=-1)
 
         # predict the noise residual
         noise_pred = self.net(
