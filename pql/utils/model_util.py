@@ -22,17 +22,17 @@ def load_model(model, model_type, artifact_cfg):
 
 
 def save_model(path, actor, critic, rms, wandb_run, description):
+    checkpoint = {'obs_rms': rms}
     if isinstance(actor, list):
-        checkpoint = {'obs_rms': rms,
-            'critic': critic
-            }
         for i in range(len(actor)):
             checkpoint[f'actor_{i}'] = actor[i].state_dict()
     else:
-        checkpoint = {'obs_rms': rms,
-            'actor': actor,
-            'critic': critic
-            }
+        checkpoint['actor'] = actor
+    if isinstance(critic, list):
+        for i in range(len(critic)):
+            checkpoint[f'critic_{i}'] = critic[i].state_dict()
+    else:
+        checkpoint['critic'] = critic
     torch.save(checkpoint, path)  # save policy network in *.pth
 
     model_artifact = wandb.Artifact(wandb_run.id, type="model", description=description)
