@@ -140,20 +140,20 @@ class DiffusionPolicy(nn.Module):
         self.diffusion_iter = diffusion_iter
         self.device = device
         self.point_encoder = PointNetEncoderXYZ(in_channels=3,
-                                                out_channels=256,
+                                                out_channels=128,
                                                 use_layernorm=True,
                                                 final_norm='layernorm',
                                                 use_projection=True)
         # self.point_encoder = MultiStagePointNetEncoder(out_channels=128)
         self.point_encoder.apply(weight_init)
         # self.obs_encoder = nn.Identity()
-        self.obs_encoder = nn.Sequential(nn.Linear(state_dim, 256), nn.ReLU(inplace=True), nn.Linear(256, 256), nn.LayerNorm(256))
+        self.obs_encoder = nn.Sequential(nn.Linear(state_dim, 64), nn.ReLU(inplace=True), nn.Linear(64, 64), nn.LayerNorm(64))
         self.obs_encoder.apply(weight_init)
 
         # init network
         self.net = DiffusionNet(
-            transition_dim=self.point_encoder.out_channels + action_dim + 256,
-            cond_dim=self.point_encoder.out_channels + 256)
+            transition_dim=self.point_encoder.out_channels + action_dim + 64,
+            cond_dim=self.point_encoder.out_channels + 64)
 
         # init noise scheduler
         self.noise_scheduler = DDPMScheduler(
