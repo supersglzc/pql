@@ -223,7 +223,24 @@ class MLPResNet(nn.Module):
         x = self.act(x)
         x = self.dense2(x)
         return x
-
+    
+def generate_state_encoder(state_dim, state_encoder_out_channels, encoder_type):
+    if encoder_type == "mlp":
+        model = nn.Sequential(nn.Linear(state_dim, state_encoder_out_channels), 
+                            nn.ReLU(inplace=True), 
+                            nn.Linear(state_encoder_out_channels, state_encoder_out_channels), 
+                            nn.LayerNorm(state_encoder_out_channels))
+        out_channels = state_encoder_out_channels
+    elif encoder_type == "fourier":
+        model = FourierSE3Embedder(state_dim=state_dim, d_model=state_encoder_out_channels, num_freqs=6, max_freq=12.0)
+        out_channels = state_encoder_out_channels
+    elif encoder_type == "identity":
+        model = nn.Identity()
+        out_channels = state_dim
+    else:
+        raise ValueError(f"Invalid encoder type: {encoder_type}")
+    model.apply(weight_init)
+    return model, out_channels
 
 from pql.models.pointnet import PointNetEncoderXYZ, MultiStagePointNetEncoder
 from pql.models.visual import weight_init
@@ -231,11 +248,11 @@ class DiffusionPolicy(nn.Module):
     def __init__(self, state_dim, action_dim, diffusion_iter, 
                  point_encoder_type="xyz", 
                  point_encoder_out_channels=256,
+                 state_encoder_type="fourier",
                  state_encoder_out_channels=256,
                  multi_head=False,
                  split_obs=False,
                  normalizer=None,
-                 use_fourier=False,
                  device="cuda"):
         super().__init__()
         if isinstance(state_dim, Sequence):
@@ -247,62 +264,36 @@ class DiffusionPolicy(nn.Module):
         self.multi_head = multi_head
         self.split_obs = split_obs
         self.normalizer = normalizer
+        cond_dim = 0
+        # point encoder
         if point_encoder_type == "xyz":
             self.point_encoder_func = PointNetEncoderXYZ
         elif point_encoder_type == "multistage":
             self.point_encoder_func = MultiStagePointNetEncoder
+        elif point_encoder_type is None:
+            self.point_encoder_func = None
         else:
             raise ValueError(f"Invalid point encoder type: {point_encoder_type}")
-        # self.obs_encoder = nn.Identity()
-        self.point_encoder = self.point_encoder_func(out_channels=point_encoder_out_channels)
-        self.point_encoder.apply(weight_init)
-        if self.split_obs:
-            state_dim = state_dim // 2
-            # self.point_encoder1 = self.point_encoder_func(out_channels=point_encoder_out_channels)
-            # self.point_encoder1.apply(weight_init)
-            # self.point_encoder2 = self.point_encoder_func(out_channels=point_encoder_out_channels)
-            # self.point_encoder2.apply(weight_init)
-            if use_fourier:
-                self.obs_encoder1 = FourierSE3Embedder(state_dim=state_dim, d_model=state_encoder_out_channels, num_freqs=6, max_freq=12.0)
-                self.obs_encoder1.apply(weight_init)
-                self.obs_encoder2 = FourierSE3Embedder(state_dim=state_dim, d_model=state_encoder_out_channels, num_freqs=6, max_freq=12.0)
-                self.obs_encoder2.apply(weight_init)
-            else:
-                self.obs_encoder1 = nn.Sequential(nn.Linear(state_dim, state_encoder_out_channels), 
-                                                nn.ReLU(inplace=True), 
-                                                nn.Linear(state_encoder_out_channels, state_encoder_out_channels), 
-                                                nn.LayerNorm(state_encoder_out_channels))
-                self.obs_encoder1.apply(weight_init)
-                self.obs_encoder2 = nn.Sequential(nn.Linear(state_dim, state_encoder_out_channels), 
-                                            nn.ReLU(inplace=True), 
-                                            nn.Linear(state_encoder_out_channels, state_encoder_out_channels), 
-                                            nn.LayerNorm(state_encoder_out_channels))
-                self.obs_encoder2.apply(weight_init)
+        if self.point_encoder_func is not None:
+            self.point_encoder = self.point_encoder_func(out_channels=point_encoder_out_channels)
+            self.point_encoder.apply(weight_init)
+            cond_dim += point_encoder_out_channels
         else:
-            # self.point_encoder = self.point_encoder_func(out_channels=point_encoder_out_channels)
-            # self.point_encoder.apply(weight_init)
-            if use_fourier:
-                self.obs_encoder = FourierSE3Embedder(state_dim=state_dim, d_model=state_encoder_out_channels, num_freqs=6, max_freq=12.0)
-                self.obs_encoder.apply(weight_init)
-            else:
-                self.obs_encoder = nn.Sequential(nn.Linear(state_dim, state_encoder_out_channels), 
-                                                nn.ReLU(inplace=True), 
-                                                nn.Linear(state_encoder_out_channels, state_encoder_out_channels), 
-                                                nn.LayerNorm(state_encoder_out_channels))
-                self.obs_encoder.apply(weight_init)
+            self.point_encoder = None
 
+        if self.split_obs:
+            self.obs_encoder1, out_channels = generate_state_encoder(state_dim // 2, state_encoder_out_channels, state_encoder_type)
+            self.obs_encoder2, out_channels = generate_state_encoder(state_dim // 2, state_encoder_out_channels, state_encoder_type)
+            cond_dim += out_channels
+        else:
+            self.obs_encoder, out_channels = generate_state_encoder(state_dim, state_encoder_out_channels, state_encoder_type)
+            cond_dim += out_channels
         # init network
         self.net = DiffusionNet(
-            transition_dim=point_encoder_out_channels + action_dim + state_encoder_out_channels,
-            cond_dim=point_encoder_out_channels + state_encoder_out_channels,
+            transition_dim=action_dim + cond_dim,
+            cond_dim=cond_dim,
             multi_head=multi_head
         )
-        # self.net = DiffusionNet(
-        #     transition_dim=action_dim + state_encoder_out_channels,
-        #     cond_dim=state_encoder_out_channels,
-        #     multi_head=multi_head
-        # )
-
         # init noise scheduler
         # self.noise_scheduler = DDPMScheduler(
         #     num_train_timesteps=self.diffusion_iter,
@@ -319,26 +310,35 @@ class DiffusionPolicy(nn.Module):
             clip_sample=True,
             set_alpha_to_one=True,
             steps_offset=0,
-            prediction_type='epsilon'
+            prediction_type='sample'
         )
 
-    def forward(self, img, state, pc, sample=True):
+    def forward(self, state, img=None, pc=None, sample=True):
         return self.get_actions(img, state, pc, sample=sample)
-
-    def get_actions(self, img, state, pc, sample=True):
-        B = state.shape[0]
-        point_feat = self.point_encoder(pc)
-        if self.split_obs:
-            # point_feat1 = self.point_encoder1(pc[:, :, :3])
-            # point_feat2 = self.point_encoder2(pc[:, :, 3:])
-            obs_feat1 = self.obs_encoder1(state[:, :22])
-            obs_feat2 = self.obs_encoder2(state[:, 22:])
-            point_state_feat = torch.cat([point_feat, obs_feat1], dim=-1)
-            point_state_feat2 = torch.cat([point_feat, obs_feat2], dim=-1)
+    
+    def get_cond(self, state, pc):
+        if self.point_encoder is not None:
+            point_feat = self.point_encoder(pc)
+            if self.split_obs:
+                obs_feat1 = self.obs_encoder1(state[:, :22])
+                obs_feat2 = self.obs_encoder2(state[:, 22:])
+                point_state_feat = torch.cat([point_feat, obs_feat1], dim=-1)
+                point_state_feat2 = torch.cat([point_feat, obs_feat2], dim=-1)
+            else:
+                obs_feat = self.obs_encoder(state)
+                point_state_feat = torch.cat([point_feat, obs_feat], dim=-1)
         else:
-            obs_feat = self.obs_encoder(state)
-            point_state_feat = torch.cat([point_feat, obs_feat], dim=-1)
-        # point_state_feat = self.obs_encoder(state)
+            if self.split_obs:
+                point_state_feat = self.obs_encoder1(state[:, :22])
+                point_state_feat2 = self.obs_encoder2(state[:, 22:])
+            else:
+                point_state_feat = self.obs_encoder(state)
+        return point_state_feat, point_state_feat2 if self.split_obs else None
+
+    def get_actions(self, state, img=None, pc=None, sample=True):
+        B = state.shape[0]
+        point_state_feat, point_state_feat2 = self.get_cond(state, pc)
+
         # init action from Guassian noise
         noisy_action = torch.randn(
             (B, self.action_dim), device=self.device)
@@ -353,7 +353,7 @@ class DiffusionPolicy(nn.Module):
                 noisy_action,
                 timesteps,
                 point_state_feat,
-                point_state_feat2 if self.split_obs else None
+                point_state_feat2
             )
             if self.multi_head:
                 noise_pred1, noise_pred2 = noise_pred
@@ -376,7 +376,7 @@ class DiffusionPolicy(nn.Module):
 
         return noisy_action
         
-    def get_loss(self, img, state, pc, action, noise=None, timesteps=None):
+    def get_loss(self, state, action, img=None, pc=None, noise=None, timesteps=None):
         B = action.shape[0]
         if self.normalizer is not None:
             action = self.normalizer['action'].normalize(action)
@@ -396,22 +396,14 @@ class DiffusionPolicy(nn.Module):
         # (this is the forward diffusion process)
         noisy_action = self.noise_scheduler.add_noise(
             action, noise, timesteps)
-        point_feat = self.point_encoder(pc)
-        if self.split_obs:
-            obs_feat1 = self.obs_encoder1(state[:, :22])
-            obs_feat2 = self.obs_encoder2(state[:, 22:])
-            point_state_feat = torch.cat([point_feat, obs_feat1], dim=-1)
-            point_state_feat2 = torch.cat([point_feat, obs_feat2], dim=-1)
-        else:
-            obs_feat = self.obs_encoder(state)
-            point_state_feat = torch.cat([point_feat, obs_feat], dim=-1)
-        # point_state_feat = self.obs_encoder(state)
+        point_state_feat, point_state_feat2 = self.get_cond(state, pc)
+
         # predict the noise residual
         noise_pred = self.net(
                 noisy_action,
                 timesteps,
                 point_state_feat,
-                point_state_feat2 if self.split_obs else None
+                point_state_feat2
             )
         pred_type = self.noise_scheduler.config.prediction_type 
         if pred_type == 'epsilon':
@@ -419,12 +411,20 @@ class DiffusionPolicy(nn.Module):
         elif pred_type == 'sample':
             target = action
 
+        loss_dict = {}
         if self.multi_head:
             noise_pred1, noise_pred2 = noise_pred
-            loss1 = nn.functional.mse_loss(noise_pred1, target[:, :22], reduction='none').mean(dim=1)  # [B]
-            loss2 = nn.functional.mse_loss(noise_pred2, target[:, 22:], reduction='none').mean(dim=1)  # [B]
+            loss1_multi_dim = nn.functional.mse_loss(noise_pred1, target[:, :22], reduction='none')  # [B, 22]
+            loss1 = loss1_multi_dim.mean(dim=1)  # [B]
+            loss2_multi_dim = nn.functional.mse_loss(noise_pred2, target[:, 22:], reduction='none')
+            loss2 = loss2_multi_dim.mean(dim=1)  # [B] 
             loss = ((loss1 + loss2) / 2).mean()  # scalar 
-            return loss, loss1.mean(), loss2.mean()
+            loss_dict["right_hand_loss"] = loss1.mean()
+            loss_dict["left_hand_loss"] = loss2.mean()
+            loss_dict["loss_multi_dim"] = torch.cat([loss1_multi_dim.mean(dim=0).detach(), loss2_multi_dim.mean(dim=0).detach()], dim=0)
+            return loss, loss_dict
         else:
-            loss = nn.functional.mse_loss(noise_pred, target)
-            return loss
+            loss_multi_dim = nn.functional.mse_loss(noise_pred, target, reduction='none')
+            loss = loss_multi_dim.mean()
+            loss_dict["loss_multi_dim"] = loss_multi_dim.mean(dim=0).detach()
+            return loss, loss_dict
